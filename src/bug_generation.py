@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -15,9 +16,26 @@ class RunCmd(Protocol):
     def __call__(self, cmd: list[str], cwd: Path, check: bool = False) -> CmdResultLike: ...
 
 
+def append_run_log(log_path: Path | None, message: str) -> None:
+    if log_path is None:
+        return
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).isoformat()
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(f"[{timestamp}] {message}\n")
+
+
+def patch_dir_for_source(source_file: Path, repo_root: Path) -> Path:
+    return repo_root / ".gremlin" / "bugs" / source_file.parent
+
+
+def patch_path_for_source(source_file: Path, repo_root: Path, patch_no: int) -> Path:
+    return patch_dir_for_source(source_file, repo_root) / f"{source_file.name}.bug-{patch_no}.patch"
+
+
 def patch_files_for_source(source_file: Path, repo_root: Path) -> list[Path]:
     pattern = f"{source_file.name}.bug-*.patch"
-    return sorted((repo_root / source_file.parent).glob(pattern))
+    return sorted(patch_dir_for_source(source_file, repo_root).glob(pattern))
 
 
 def next_patch_number(source_file: Path, repo_root: Path) -> int:
@@ -34,7 +52,7 @@ def read_existing_patch_context(source_file: Path, repo_root: Path) -> str:
     parts: list[str] = []
     for patch in patch_files_for_source(source_file, repo_root):
         content = patch.read_text(encoding="utf-8", errors="replace")
-        parts.append(f"--- {patch.name} ---\n{content}\n")
+        parts.append(f"--- {patch.relative_to(repo_root).as_posix()} ---\n{content}\n")
     return "\n".join(parts).strip()
 
 
@@ -95,6 +113,7 @@ def create_patch_for_source(
     diff = run_cmd(["git", "diff", "--", source_file.as_posix()], cwd=repo_root, check=True)
     if not diff.stdout.strip():
         return False
+    patch_path.parent.mkdir(parents=True, exist_ok=True)
     patch_path.write_text(diff.stdout, encoding="utf-8")
     return True
 
@@ -113,15 +132,21 @@ def generate_bug_patches_for_file(
     steps_per_file: int,
     dry_run: bool,
     run_cmd: RunCmd,
+    log_path: Path | None = None,
 ) -> list[Path]:
     generated: list[Path] = []
 
     for step_index in range(steps_per_file):
         patch_no = next_patch_number(source_file, repo_root)
-        patch_path = repo_root / source_file.parent / f"{source_file.name}.bug-{patch_no}.patch"
+        patch_path = patch_path_for_source(source_file, repo_root, patch_no)
 
         if dry_run:
             generated.append(patch_path)
+            append_run_log(
+                log_path,
+                f"dry-run generated placeholder for {source_file.as_posix()} -> "
+                f"{patch_path.relative_to(repo_root).as_posix()}",
+            )
             continue
 
         ensure_clean_worktree(repo_root, source_file, run_cmd)
@@ -130,10 +155,18 @@ def generate_bug_patches_for_file(
         prompt = build_claude_prompt(source_file, existing_context)
         print(
             f"[claude] {source_file.as_posix()} step {step_index + 1}/{steps_per_file} "
-            f"-> {patch_path.name}"
+            f"-> {patch_path.relative_to(repo_root).as_posix()}"
+        )
+        append_run_log(
+            log_path,
+            f"claude start file={source_file.as_posix()} "
+            f"step={step_index + 1}/{steps_per_file} patch={patch_path.relative_to(repo_root).as_posix()}",
         )
         claude = run_cmd(["claude", "-p", prompt], cwd=repo_root, check=False)
         print(f"[claude] exit code: {claude.returncode}")
+        append_run_log(log_path, f"claude exit code={claude.returncode}")
+        append_run_log(log_path, f"claude stdout:\n{claude.stdout}")
+        append_run_log(log_path, f"claude stderr:\n{claude.stderr}")
         if claude.returncode != 0:
             raise RuntimeError(
                 f"claude failed for {source_file.as_posix()}\n"
@@ -143,6 +176,14 @@ def generate_bug_patches_for_file(
 
         patch_created = create_patch_for_source(source_file, patch_path, repo_root, run_cmd)
         if not patch_created:
+            status = run_cmd(
+                ["git", "status", "--porcelain", "--", source_file.as_posix()],
+                cwd=repo_root,
+                check=False,
+            )
+            diff = run_cmd(["git", "diff", "--", source_file.as_posix()], cwd=repo_root, check=False)
+            append_run_log(log_path, f"no-diff git status for {source_file.as_posix()}:\n{status.stdout}")
+            append_run_log(log_path, f"no-diff git diff for {source_file.as_posix()}:\n{diff.stdout}")
             raise RuntimeError(
                 f"No diff produced for {source_file.as_posix()} after claude run; "
                 "cannot create patch"

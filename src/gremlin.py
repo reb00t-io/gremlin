@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -10,7 +11,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from bug_generation import generate_bug_patches_for_file, patch_files_for_source, revert_source_file
+from bug_generation import (
+    append_run_log,
+    generate_bug_patches_for_file,
+    patch_files_for_source,
+    revert_source_file,
+)
 from repo_root import discover_repo_root
 
 
@@ -117,6 +123,11 @@ def append_jsonl(path: Path, record: dict) -> None:
         handle.write(json.dumps(record) + "\n")
 
 
+def build_run_log_path(repo_root: Path) -> Path:
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    return repo_root / ".gremlin" / "log" / f"{timestamp}-{os.getpid()}.log"
+
+
 def verify_patch(
     source_file: Path,
     patch_path: Path,
@@ -178,6 +189,8 @@ def main() -> int:
     args = parse_args()
     repo_root = args.repo_root.resolve() if args.repo_root else discover_repo_root(Path.cwd())
     results_file = args.results_file if args.results_file.is_absolute() else repo_root / args.results_file
+    run_log_path = build_run_log_path(repo_root)
+    append_run_log(run_log_path, f"gremlin start repo_root={repo_root.as_posix()}")
 
     tracked_files = git_tracked_files(repo_root)
     candidates = [file for file in tracked_files if is_source_candidate(file, repo_root)]
@@ -195,6 +208,7 @@ def main() -> int:
                 steps_per_file=args.steps_per_file,
                 dry_run=args.dry_run,
                 run_cmd=run_cmd,
+                log_path=run_log_path,
             )
             print(f"generated {len(generated)} patches")
 
@@ -208,6 +222,10 @@ def main() -> int:
                     dry_run=args.dry_run,
                 )
         except RuntimeError as err:
+            append_run_log(
+                run_log_path,
+                f"error while processing {source_file.as_posix()}: {err}",
+            )
             print(f"Error while processing {source_file.as_posix()}: {err}", file=sys.stderr)
             if "pre-existing non-patch changes" in str(err):
                 print(
@@ -215,9 +233,12 @@ def main() -> int:
                     "or run with --dry-run.",
                     file=sys.stderr,
                 )
+            print(f"Details logged to {run_log_path}", file=sys.stderr)
             return 1
 
     print(f"\nVerification results written to {results_file}")
+    append_run_log(run_log_path, f"gremlin completed results_file={results_file.as_posix()}")
+    print(f"Run log: {run_log_path}")
     return 0
 
 
