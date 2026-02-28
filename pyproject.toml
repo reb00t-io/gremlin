@@ -26,6 +26,7 @@ py-modules = ["gremlin_scan", "gremlin", "plot_token_report", "repo_root", "bug_
 
 [project.optional-dependencies]
 dev = [
+  "prompt-toolkit>=3.0",
   "pytest>=8.2",
 ]
 
