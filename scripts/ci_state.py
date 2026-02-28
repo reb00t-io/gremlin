@@ -105,7 +105,8 @@ def select_run(runs: list[dict[str, Any]]) -> int | None:
     radio = RadioList(values=values)
     bindings = KeyBindings()
 
-    @bindings.add("enter")
+    @bindings.add("enter", eager=True)
+    @bindings.add("c-m", eager=True)
     def _accept(event) -> None:  # type: ignore[no-untyped-def]
         event.app.exit(result=radio.current_value)
 
