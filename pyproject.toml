@@ -28,3 +28,7 @@ py-modules = ["gremlin_scan", "gremlin", "plot_token_report", "repo_root"]
 dev = [
   "pytest>=8.2",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["test", "src"]
+python_files = ["test_*.py", "*_test.py", "e2e.py"]
