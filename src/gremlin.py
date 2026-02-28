@@ -6,6 +6,7 @@ import json
 import re
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -96,7 +97,7 @@ def has_adjacent_test_file(file_path: Path, repo_root: Path) -> bool:
 def is_source_candidate(file_path: Path, repo_root: Path) -> bool:
     if file_path.name.endswith(".patch"):
         return False
-    if file_path.stem.endswith("_test"):
+    if file_path.stem.endswith("_test") or file_path.stem.startswith("test_"):
         return False
     if file_path.suffix.lower() not in SUPPORTED_TEST_EXTENSIONS:
         return False
@@ -140,7 +141,11 @@ def read_existing_patch_context(source_file: Path, repo_root: Path) -> str:
 
 
 def ensure_clean_worktree(repo_root: Path, source_file: Path) -> None:
-    status = run_cmd(["git", "status", "--porcelain"], cwd=repo_root, check=True)
+    status = run_cmd(
+        ["git", "status", "--porcelain", "--", source_file.as_posix()],
+        cwd=repo_root,
+        check=True,
+    )
     dirty_lines = [line for line in status.stdout.splitlines() if line.strip()]
     dirty_non_patch = []
     for line in dirty_lines:
@@ -148,12 +153,10 @@ def ensure_clean_worktree(repo_root: Path, source_file: Path) -> None:
         if path and not path.endswith(".patch"):
             dirty_non_patch.append(path)
 
-    allowed = {source_file.as_posix()}
-    disallowed = [path for path in dirty_non_patch if path not in allowed]
-    if disallowed:
+    if dirty_non_patch:
         raise RuntimeError(
-            "Working tree has pre-existing non-patch changes; aborting for safety: "
-            + ", ".join(disallowed)
+            "Target file has pre-existing non-patch changes; aborting for safety: "
+            + ", ".join(dirty_non_patch)
         )
 
 
@@ -294,7 +297,7 @@ def verify_patch(
         revert_source_file(source_file, repo_root)
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
     repo_root = args.repo_root.resolve() if args.repo_root else discover_repo_root(Path.cwd())
     results_file = args.results_file if args.results_file.is_absolute() else repo_root / args.results_file
@@ -307,27 +310,38 @@ def main() -> None:
     print(f"Processing up to {len(selected)} files, {args.steps_per_file} steps per file")
 
     for source_file in selected:
-        print(f"\n[generate] {source_file.as_posix()}")
-        generated = generate_bug_patches_for_file(
-            source_file=source_file,
-            repo_root=repo_root,
-            steps_per_file=args.steps_per_file,
-            dry_run=args.dry_run,
-        )
-        print(f"generated {len(generated)} patches")
-
-        print(f"[verify] {source_file.as_posix()}")
-        for patch_path in patch_files_for_source(source_file, repo_root):
-            verify_patch(
+        try:
+            print(f"\n[generate] {source_file.as_posix()}")
+            generated = generate_bug_patches_for_file(
                 source_file=source_file,
-                patch_path=patch_path,
                 repo_root=repo_root,
-                results_file=results_file,
+                steps_per_file=args.steps_per_file,
                 dry_run=args.dry_run,
             )
+            print(f"generated {len(generated)} patches")
+
+            print(f"[verify] {source_file.as_posix()}")
+            for patch_path in patch_files_for_source(source_file, repo_root):
+                verify_patch(
+                    source_file=source_file,
+                    patch_path=patch_path,
+                    repo_root=repo_root,
+                    results_file=results_file,
+                    dry_run=args.dry_run,
+                )
+        except RuntimeError as err:
+            print(f"Error while processing {source_file.as_posix()}: {err}", file=sys.stderr)
+            if "pre-existing non-patch changes" in str(err):
+                print(
+                    "Tip: commit/stash/revert local changes in that target file, "
+                    "or run with --dry-run.",
+                    file=sys.stderr,
+                )
+            return 1
 
     print(f"\nVerification results written to {results_file}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

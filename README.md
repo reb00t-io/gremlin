@@ -32,7 +32,7 @@ Both commands auto-detect repo root from current working directory unless `--rep
 ## Tests
 
 ```bash
-pytest -q tests/e2e.py
+pytest -q test/e2e.py src/*_test.py
 ```
 
 ## CI

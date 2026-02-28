@@ -175,7 +175,8 @@ def classify_file(path: Path) -> str | None:
 def is_test_code_file(path: Path) -> bool:
     in_root_test_dir = len(path.parts) > 1 and path.parts[0] in {"test", "tests"}
     has_test_suffix = path.suffix != "" and path.stem.endswith("_test")
-    return in_root_test_dir or has_test_suffix
+    has_test_prefix = path.suffix != "" and path.stem.startswith("test_")
+    return in_root_test_dir or has_test_suffix or has_test_prefix
 
 
 def read_text_file(path: Path) -> str | None:
