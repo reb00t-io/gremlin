@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import shlex
 import subprocess
 import sys
@@ -11,9 +10,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from bug_generation import generate_bug_patches_for_file, patch_files_for_source, revert_source_file
 from repo_root import discover_repo_root
-
-SUPPORTED_TEST_EXTENSIONS = {".go", ".py"}
 
 
 @dataclass
@@ -99,8 +97,6 @@ def is_source_candidate(file_path: Path, repo_root: Path) -> bool:
         return False
     if file_path.stem.endswith("_test") or file_path.stem.startswith("test_"):
         return False
-    if file_path.suffix.lower() not in SUPPORTED_TEST_EXTENSIONS:
-        return False
     return has_adjacent_test_file(file_path, repo_root)
 
 
@@ -109,138 +105,16 @@ def test_file_for_source(source_file: Path) -> Path:
 
 
 def test_command_for_source(source_file: Path, test_file: Path) -> list[str]:
-    suffix = source_file.suffix.lower()
+    suffix = test_file.suffix.lower()
     if suffix == ".go":
-        return ["go", "test", f"./{source_file.parent.as_posix()}"]
-    if suffix == ".py":
-        return ["pytest", test_file.as_posix()]
-    raise ValueError(f"Unsupported extension for test command: {suffix}")
-
-
-def patch_files_for_source(source_file: Path, repo_root: Path) -> list[Path]:
-    pattern = f"{source_file.name}.bug-*.patch"
-    return sorted((repo_root / source_file.parent).glob(pattern))
-
-
-def next_patch_number(source_file: Path, repo_root: Path) -> int:
-    highest = 0
-    for patch in patch_files_for_source(source_file, repo_root):
-        match = re.search(r"\.bug-(\d+)\.patch$", patch.name)
-        if not match:
-            continue
-        highest = max(highest, int(match.group(1)))
-    return highest + 1
-
-
-def read_existing_patch_context(source_file: Path, repo_root: Path) -> str:
-    parts: list[str] = []
-    for patch in patch_files_for_source(source_file, repo_root):
-        content = patch.read_text(encoding="utf-8", errors="replace")
-        parts.append(f"--- {patch.name} ---\n{content}\n")
-    return "\n".join(parts).strip()
-
-
-def ensure_clean_worktree(repo_root: Path, source_file: Path) -> None:
-    status = run_cmd(
-        ["git", "status", "--porcelain", "--", source_file.as_posix()],
-        cwd=repo_root,
-        check=True,
-    )
-    dirty_lines = [line for line in status.stdout.splitlines() if line.strip()]
-    dirty_non_patch = []
-    for line in dirty_lines:
-        path = line[3:] if len(line) > 3 else ""
-        if path and not path.endswith(".patch"):
-            dirty_non_patch.append(path)
-
-    if dirty_non_patch:
-        raise RuntimeError(
-            "Target file has pre-existing non-patch changes; aborting for safety: "
-            + ", ".join(dirty_non_patch)
-        )
-
-
-def build_claude_prompt(source_file: Path, existing_patch_context: str) -> str:
-    if existing_patch_context:
-        existing_section = (
-            "Previously generated bug patches for this file are below. "
-            "Your new bug must be materially different from all of them:\n\n"
-            f"{existing_patch_context}"
-        )
-    else:
-        existing_section = "No previous bug patches exist for this file."
-
-    return (
-        "You are editing a git repository via Claude Code.\n"
-        f"Target file: {source_file.as_posix()}\n\n"
-        "Task:\n"
-        "- Introduce exactly one bug in the target file that should cause the adjacent _test file to fail.\n"
-        "- Keep the code syntactically valid.\n"
-        "- Modify ONLY the target file.\n"
-        "- Do not create patch files.\n"
-        "- Do not run git commit.\n\n"
-        f"{existing_section}\n\n"
-        "When done, stop after applying that single bug."
-    )
-
-
-def create_patch_for_source(source_file: Path, patch_path: Path, repo_root: Path) -> bool:
-    diff = run_cmd(["git", "diff", "--", source_file.as_posix()], cwd=repo_root, check=True)
-    if not diff.stdout.strip():
-        return False
-    patch_path.write_text(diff.stdout, encoding="utf-8")
-    return True
-
-
-def revert_source_file(source_file: Path, repo_root: Path) -> None:
-    run_cmd(["git", "checkout", "--", source_file.as_posix()], cwd=repo_root, check=True)
+        return ["go", "test", f"./{test_file.parent.as_posix()}"]
+    return ["pytest", test_file.as_posix()]
 
 
 def append_jsonl(path: Path, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record) + "\n")
-
-
-def generate_bug_patches_for_file(
-    source_file: Path,
-    repo_root: Path,
-    steps_per_file: int,
-    dry_run: bool,
-) -> list[Path]:
-    generated: list[Path] = []
-
-    for _ in range(steps_per_file):
-        patch_no = next_patch_number(source_file, repo_root)
-        patch_path = repo_root / source_file.parent / f"{source_file.name}.bug-{patch_no}.patch"
-
-        if dry_run:
-            generated.append(patch_path)
-            continue
-
-        ensure_clean_worktree(repo_root, source_file)
-
-        existing_context = read_existing_patch_context(source_file, repo_root)
-        prompt = build_claude_prompt(source_file, existing_context)
-        claude = run_cmd(["claude", "-p", prompt], cwd=repo_root, check=False)
-        if claude.returncode != 0:
-            raise RuntimeError(
-                f"claude failed for {source_file.as_posix()}\n"
-                f"stdout:\n{claude.stdout}\n"
-                f"stderr:\n{claude.stderr}"
-            )
-
-        patch_created = create_patch_for_source(source_file, patch_path, repo_root)
-        if not patch_created:
-            raise RuntimeError(
-                f"No diff produced for {source_file.as_posix()} after claude run; "
-                "cannot create patch"
-            )
-
-        generated.append(patch_path)
-        revert_source_file(source_file, repo_root)
-
-    return generated
 
 
 def verify_patch(
@@ -280,7 +154,10 @@ def verify_patch(
         return
 
     test_result = run_cmd(test_cmd, cwd=repo_root, check=False)
-    works = test_result.returncode != 0
+    # A bug patch "works" if it causes real test failures (nonzero exit).
+    # pytest exit code 5 means "no tests were collected" – that's not a real
+    # failure caused by the patch, so treat it the same as a pass (works=False).
+    works = test_result.returncode != 0 and test_result.returncode != 5
     record.update(
         {
             "applied": True,
@@ -294,7 +171,7 @@ def verify_patch(
 
     revert_result = run_cmd(["git", "apply", "-R", patch_path.as_posix()], cwd=repo_root, check=False)
     if revert_result.returncode != 0:
-        revert_source_file(source_file, repo_root)
+        revert_source_file(source_file, repo_root, run_cmd=run_cmd)
 
 
 def main() -> int:
@@ -317,6 +194,7 @@ def main() -> int:
                 repo_root=repo_root,
                 steps_per_file=args.steps_per_file,
                 dry_run=args.dry_run,
+                run_cmd=run_cmd,
             )
             print(f"generated {len(generated)} patches")
 
