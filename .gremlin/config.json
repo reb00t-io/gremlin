@@ -1,0 +1,6 @@
+{
+  "exclude_file_names": [
+    "package-lock.json",
+    ".gremlin"
+  ]
+}

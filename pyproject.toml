@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gremlin"
+version = "0.1.0"
+description = "TODO."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Marko Rosenmüller" }]
+keywords = []
+dependencies = [
+  "matplotlib>=3.8",
+  "tiktoken>=0.7",
+]
+
+[project.scripts]
+gremlin-scan = "gremlin_scan:main"
+gremlin = "gremlin:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["gremlin_scan", "gremlin", "plot_token_report", "repo_root"]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2",
+]
