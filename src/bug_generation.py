@@ -162,7 +162,7 @@ def generate_bug_patches_for_file(
             f"claude start file={source_file.as_posix()} "
             f"step={step_index + 1}/{steps_per_file} patch={patch_path.relative_to(repo_root).as_posix()}",
         )
-        claude = run_cmd(["claude", "-p", prompt], cwd=repo_root, check=False)
+        claude = run_cmd(["claude", "-p", prompt, "--dangerously-skip-permissions"], cwd=repo_root, check=False)
         print(f"[claude] exit code: {claude.returncode}")
         append_run_log(log_path, f"claude exit code={claude.returncode}")
         append_run_log(log_path, f"claude stdout:\n{claude.stdout}")
