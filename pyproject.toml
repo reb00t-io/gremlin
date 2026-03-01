@@ -19,10 +19,11 @@ dependencies = [
 [project.scripts]
 gremlin-scan = "gremlin_scan:main"
 gremlin = "gremlin:main"
+gremlin-eval = "gremlin_eval:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["gremlin_scan", "gremlin", "gremlin_cmd", "plot_token_report", "repo_root", "bug_generation"]
+py-modules = ["gremlin_scan", "gremlin", "gremlin_cmd", "gremlin_eval", "plot_token_report", "repo_root", "bug_generation"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
