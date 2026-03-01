@@ -6,8 +6,7 @@ from pathlib import Path
 import pytest
 
 from bug_generation import ensure_clean_worktree
-from gremlin import run_cmd
-from gremlin_core import is_source_candidate, test_command_for_source as build_test_command
+from gremlin_core import is_source_candidate, run_cmd, test_command_for_source as build_test_command
 
 
 def _git(cwd: Path, *args: str) -> None:

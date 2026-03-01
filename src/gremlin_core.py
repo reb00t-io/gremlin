@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import shlex
+import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
 
 from bug_generation import (
     append_run_log,
@@ -15,17 +16,33 @@ from bug_generation import (
 )
 
 
-class CmdResultLike(Protocol):
+@dataclass
+class CmdResult:
     returncode: int
     stdout: str
     stderr: str
 
 
-class RunCmd(Protocol):
-    def __call__(self, cmd: list[str], cwd: Path, check: bool = False) -> CmdResultLike: ...
+def run_cmd(cmd: list[str], cwd: Path, check: bool = False) -> CmdResult:
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    result = CmdResult(proc.returncode, proc.stdout, proc.stderr)
+    if check and proc.returncode != 0:
+        raise RuntimeError(
+            f"Command failed ({proc.returncode}): {shlex.join(cmd)}\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+    return result
 
 
-def git_tracked_files(repo_root: Path, run_cmd: RunCmd) -> list[Path]:
+def git_tracked_files(repo_root: Path) -> list[Path]:
     result = run_cmd(["git", "ls-files", "-z"], cwd=repo_root, check=True)
     paths = result.stdout.split("\x00")
     return sorted(Path(p) for p in paths if p)
@@ -64,7 +81,6 @@ def verify_patch(
     repo_root: Path,
     results_file: Path,
     dry_run: bool,
-    run_cmd: RunCmd,
 ) -> None:
     test_file = test_file_for_source(source_file)
     test_cmd = test_command_for_source(source_file, test_file)
@@ -139,7 +155,6 @@ def process_source_file(
     dry_run: bool,
     results_file: Path,
     run_log_path: Path,
-    run_cmd: RunCmd,
 ) -> None:
     print(f"\n[generate] {source_file.as_posix()}")
     generated = generate_bug_patches_for_file(
@@ -160,7 +175,6 @@ def process_source_file(
             repo_root=repo_root,
             results_file=results_file,
             dry_run=dry_run,
-            run_cmd=run_cmd,
         )
 
 
@@ -171,11 +185,10 @@ def run_generation_and_verification(
     dry_run: bool,
     results_file: Path,
     run_log_path: Path,
-    run_cmd: RunCmd,
 ) -> int:
     append_run_log(run_log_path, f"gremlin start repo_root={repo_root.as_posix()}")
 
-    tracked_files = git_tracked_files(repo_root, run_cmd=run_cmd)
+    tracked_files = git_tracked_files(repo_root)
     candidates = [file for file in tracked_files if is_source_candidate(file, repo_root)]
     selected = candidates[:max_files]
 
@@ -191,7 +204,6 @@ def run_generation_and_verification(
                 dry_run=dry_run,
                 results_file=results_file,
                 run_log_path=run_log_path,
-                run_cmd=run_cmd,
             )
         except RuntimeError as err:
             append_run_log(

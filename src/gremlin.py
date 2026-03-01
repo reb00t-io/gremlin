@@ -3,42 +3,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import os
-import shlex
-import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 
 from gremlin_cmd import parse_args
-from gremlin_core import (
-    run_generation_and_verification,
-)
+from gremlin_core import run_generation_and_verification
 from repo_root import discover_repo_root
-
-
-@dataclass
-class CmdResult:
-    returncode: int
-    stdout: str
-    stderr: str
-
-
-def run_cmd(cmd: list[str], cwd: Path, check: bool = False) -> CmdResult:
-    proc = subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    result = CmdResult(proc.returncode, proc.stdout, proc.stderr)
-    if check and proc.returncode != 0:
-        raise RuntimeError(
-            f"Command failed ({proc.returncode}): {shlex.join(cmd)}\n"
-            f"stdout:\n{result.stdout}\n"
-            f"stderr:\n{result.stderr}"
-        )
-    return result
 
 def build_run_log_path(repo_root: Path) -> Path:
     timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
@@ -56,7 +25,6 @@ def main() -> int:
         dry_run=args.dry_run,
         results_file=results_file,
         run_log_path=run_log_path,
-        run_cmd=run_cmd,
     )
 
 
