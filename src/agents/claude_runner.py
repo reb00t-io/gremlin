@@ -6,25 +6,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 
-
-class CmdResultLike(Protocol):
-    returncode: int
-    stdout: str
-    stderr: str
-
-
-class RunCmd(Protocol):
-    def __call__(self, cmd: list[str], cwd: Path, check: bool = False) -> CmdResultLike: ...
-
-
-@dataclass
-class CmdResult:
-    returncode: int
-    stdout: str
-    stderr: str
-
+from agents.agent import CmdResult, CmdResultLike
 
 def build_claude_command(prompt: str, claude_bin: str | None = None) -> list[str]:
     binary = claude_bin or os.environ.get("GREMLIN_CLAUDE_BIN", "claude")

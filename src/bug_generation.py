@@ -9,16 +9,6 @@ from typing import Protocol
 from agents.claude_runner import run_claude
 
 
-class CmdResultLike(Protocol):
-    returncode: int
-    stdout: str
-    stderr: str
-
-
-class RunCmd(Protocol):
-    def __call__(self, cmd: list[str], cwd: Path, check: bool = False) -> CmdResultLike: ...
-
-
 def append_run_log(log_path: Path | None, message: str) -> None:
     if log_path is None:
         return

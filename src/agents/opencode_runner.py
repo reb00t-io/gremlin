@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agents.claude_runner import CmdResult, CmdResultLike
+from agents.agent import CmdResult, CmdResultLike
 
 
 def build_opencode_command(prompt: str, opencode_bin: str | None = None) -> list[str]:
