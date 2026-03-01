@@ -171,7 +171,7 @@ def _snapshot_repo_for_debug(repo_root: Path) -> Path | None:
             snapshot_dir = Path(tempfile.mkdtemp(prefix="gremlin-eval-debug-"))
 
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        archive_base = snapshot_dir / f"{repo_root.name}-snapshot-{timestamp}"
+        archive_base = snapshot_dir / f"{timestamp}-{repo_root.name}-snapshot"
         archive_path = Path(shutil.make_archive(archive_base.as_posix(), "zip", root_dir=repo_root.as_posix()))
         return archive_path
     except Exception as exc:

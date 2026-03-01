@@ -154,11 +154,13 @@ def ensure_default_gremlin_config(repo_root: Path) -> Path:
 def get_tracked_files(repo_root: Path) -> list[Path]:
     result = subprocess.run(
         ["git", "-C", str(repo_root), "ls-files", "-z"],
-        check=True,
+        check=False,
         capture_output=True,
     )
-    raw_paths = result.stdout.decode("utf-8", errors="replace").split("\x00")
-    return [Path(p) for p in raw_paths if p]
+    if result.returncode == 0:
+        raw_paths = result.stdout.decode("utf-8", errors="replace").split("\x00")
+        return [Path(p) for p in raw_paths if p]
+    return [p.relative_to(repo_root) for p in repo_root.rglob("*") if p.is_file()]
 
 
 def classify_file(path: Path) -> str | None:

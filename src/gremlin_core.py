@@ -45,9 +45,11 @@ def run_cmd(cmd: list[str], cwd: Path, check: bool = False) -> CmdResult:
 
 
 def git_tracked_files(repo_root: Path) -> list[Path]:
-    result = run_cmd(["git", "ls-files", "-z"], cwd=repo_root, check=True)
-    paths = result.stdout.split("\x00")
-    return sorted(Path(p) for p in paths if p)
+    result = run_cmd(["git", "ls-files", "-z"], cwd=repo_root, check=False)
+    if result.returncode == 0:
+        paths = result.stdout.split("\x00")
+        return sorted(Path(p) for p in paths if p)
+    return sorted(p.relative_to(repo_root) for p in repo_root.rglob("*") if p.is_file())
 
 
 def is_source_candidate(file_path: Path, repo_root: Path) -> bool:
