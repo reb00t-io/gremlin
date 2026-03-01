@@ -185,7 +185,6 @@ def evaluate_patch_at_overview_commit(
         result["source_patch"] = source_patch_path.relative_to(source_repo_root).as_posix()
         result["overview"] = overview.get("_overview_path")
         result["base_commit"] = overview.get("base_commit")
-        result["evaluated_in_temp_checkout"] = True
         return result
     finally:
         if previous_snapshot_root is None:

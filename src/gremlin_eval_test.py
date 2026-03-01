@@ -441,5 +441,4 @@ def test_evaluate_patch_at_overview_commit_uses_real_checkout(monkeypatch) -> No
             overview_path.unlink()
 
     assert result["success"] is True
-    assert result["evaluated_in_temp_checkout"] is True
     assert result["base_commit"] == base_commit

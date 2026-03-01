@@ -521,20 +521,44 @@ def evaluate_case_2_impl(
             record["error"] = "tool_failed"
             return record
 
+        log_case("2", "running all tests after fixer with modified tests still applied")
+        post_fix_masked_all = run_cmd(["pytest"], cwd=repo_root, check=False)
+        record["post_fix_masked_all_tests_exit_code"] = post_fix_masked_all.returncode
+        log_command_result(
+            "2",
+            "post-fix masked all-tests",
+            post_fix_masked_all.returncode,
+            post_fix_masked_all.stdout,
+            post_fix_masked_all.stderr,
+            verbose=verbose,
+        )
+        if post_fix_masked_all.returncode != 0:
+            record["error"] = "tests_failing_after_tool_with_test_patch"
+            return record
+
         code_paths = changed_code_paths(repo_root, run_cmd)
         if code_paths is None:
+            log_case("2", "failed to inspect code changes after fixer run")
             record["error"] = "code_change_check_failed"
             return record
         record["code_changes"] = [path.as_posix() for path in code_paths]
+        if code_paths:
+            changed_summary = ", ".join(path.as_posix() for path in code_paths)
+            log_case("2", f"detected non-test code changes: {changed_summary}")
+        else:
+            log_case("2", "no non-test code changes detected after fixer run")
         if not code_paths:
             record["error"] = "no_code_changes"
             return record
 
-        log_case("2", "resetting changed test files and rerunning target tests")
+        log_case("2", "reverting changed test files to original versions")
         reset_tests = reset_changed_test_files(repo_root, run_cmd, "2")
         record["reset_test_files"] = [path.as_posix() for path in reset_tests]
         if reset_tests:
             log_case("2", f"reset {len(reset_tests)} test file(s)")
+        else:
+            log_case("2", "no changed test files detected to reset")
+        log_case("2", f"running original target test command after test reset: {shlex.join(test_cmd)}")
         restored_test = run_cmd(test_cmd, cwd=repo_root, check=False)
         record["restored_test_exit_code"] = restored_test.returncode
         log_command_result(
