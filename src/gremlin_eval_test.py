@@ -89,7 +89,7 @@ def test_evaluate_case_1_hides_git_during_tool_run(monkeypatch, tmp_path: Path) 
 
     monkeypatch.setattr(ge_cases, "hide_git_metadata", fake_hide_git_metadata)
     monkeypatch.setattr(ge_cases, "restore_git_metadata", fake_restore_git_metadata)
-    monkeypatch.setattr(ge_cases, "_snapshot_repo_for_debug", lambda _: None)
+    monkeypatch.setattr(ge_cases, "_snapshot_repo_for_debug", lambda _repo_root, *, case_id, bug_id: None)
     monkeypatch.setattr(ge, "run_cmd", fake_run_cmd)
     monkeypatch.setattr(ge_cases, "run_agent_impl", fake_run_agent_impl)
 
@@ -177,8 +177,9 @@ def test_evaluate_case_2_resets_all_changed_tests_before_final_check(monkeypatch
             return SimpleNamespace(returncode=1 if target_test_runs == 1 else 0, stdout="", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    def fake_run_agent(*, tool_template, prompt, cwd, case_id):  # type: ignore[no-untyped-def]
+    def fake_run_agent(*, tool_template, prompt, cwd, case_id, bug_id):  # type: ignore[no-untyped-def]
         assert case_id == "2"
+        assert bug_id == 1
         return SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr(ge, "run_cmd", fake_run_cmd)
@@ -293,7 +294,7 @@ def test_run_agent_uses_claude_runner_for_plain_claude(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(ge_cases.subprocess, "Popen", fake_subprocess_popen)
     monkeypatch.setattr(ge_cases, "log_case", fake_log_case)
 
-    result = ge_cases.run_agent("claude", "hello", tmp_path, case_id="1")
+    result = ge_cases.run_agent("claude", "hello", tmp_path, case_id="1", bug_id=1)
 
     assert called["claude"] is True
     assert called["popen"] is False
@@ -310,7 +311,7 @@ def test_run_agent_non_claude_uses_mock_claude_streaming(tmp_path: Path) -> None
         "--output-format stream-json --verbose --include-partial-messages"
     )
 
-    result = ge_cases.run_agent(tool_template=tool_template, prompt="hello from test", cwd=tmp_path, case_id="2")
+    result = ge_cases.run_agent(tool_template=tool_template, prompt="hello from test", cwd=tmp_path, case_id="2", bug_id=2)
 
     assert result.returncode == 0
     assert "mock claude start" in result.stdout
@@ -325,9 +326,11 @@ def test_run_agent_hides_git_and_snapshots_after_restore(monkeypatch, tmp_path: 
         state["hidden"] = True
         return Path("/tmp/fake-git-stash")
 
-    def fake_snapshot(_repo_root):  # type: ignore[no-untyped-def]
+    def fake_snapshot(_repo_root, *, case_id, bug_id):  # type: ignore[no-untyped-def]
         assert state["hidden"] is False
         assert state["restored"] is True
+        assert case_id == "1"
+        assert bug_id == 1
         state["snapshotted"] = True
         return Path("/tmp/fake-debug.zip")
 
@@ -346,7 +349,7 @@ def test_run_agent_hides_git_and_snapshots_after_restore(monkeypatch, tmp_path: 
     monkeypatch.setattr(ge_cases, "restore_git_metadata", fake_restore_git_metadata)
     monkeypatch.setattr(ge_cases, "run_agent_impl", fake_run_agent_impl)
 
-    result = ge_cases.run_agent(tool_template="echo <PROMPT>", prompt="hi", cwd=tmp_path, case_id="1")
+    result = ge_cases.run_agent(tool_template="echo <PROMPT>", prompt="hi", cwd=tmp_path, case_id="1", bug_id=1)
 
     assert result.returncode == 0
     assert state["snapshotted"] is True

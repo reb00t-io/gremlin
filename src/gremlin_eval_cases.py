@@ -198,7 +198,7 @@ def run_agent_impl(
     return SimpleNamespace(returncode=proc.returncode, stdout="".join(stdout_lines), stderr="")
 
 
-def _snapshot_repo_for_debug(repo_root: Path) -> Path | None:
+def _snapshot_repo_for_debug(repo_root: Path, case_id: str, bug_id: str | int) -> Path | None:
     try:
         configured_root = os.environ.get("GREMLIN_EVAL_SNAPSHOT_ROOT", "").strip()
         if configured_root:
@@ -208,7 +208,7 @@ def _snapshot_repo_for_debug(repo_root: Path) -> Path | None:
             snapshot_dir = Path(tempfile.mkdtemp(prefix="gremlin-eval-debug-"))
 
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        archive_base = snapshot_dir / f"{timestamp}-{repo_root.name}-snapshot"
+        archive_base = snapshot_dir / f"bug{bug_id}-case{case_id}-{timestamp}-{repo_root.name}-snapshot"
         archive_path = Path(shutil.make_archive(archive_base.as_posix(), "zip", root_dir=repo_root.as_posix()))
         return archive_path
     except Exception as exc:
@@ -216,7 +216,7 @@ def _snapshot_repo_for_debug(repo_root: Path) -> Path | None:
         return None
 
 
-def run_agent(tool_template: str, prompt: str, cwd: Path, case_id: str) -> SimpleNamespace:
+def run_agent(tool_template: str, prompt: str, cwd: Path, case_id: str, bug_id: str | int) -> SimpleNamespace:
     hidden_git_dir = hide_git_metadata(cwd)
     try:
         return run_agent_impl(
@@ -229,7 +229,7 @@ def run_agent(tool_template: str, prompt: str, cwd: Path, case_id: str) -> Simpl
         )
     finally:
         restore_git_metadata(cwd, hidden_git_dir)
-        snapshot_path = _snapshot_repo_for_debug(cwd)
+        snapshot_path = _snapshot_repo_for_debug(cwd, case_id=case_id, bug_id=bug_id)
         if snapshot_path is not None:
             print(f"[eval] debug snapshot after git restore: {snapshot_path}")
 
@@ -315,7 +315,14 @@ def evaluate_case_1_impl(
 
         prompt = build_fix_prompt()
         log_case("1", "invoking fixer tool")
-        tool_result = run_agent(tool_template=tool_template, prompt=prompt, cwd=repo_root, case_id="1")
+        bug_id = patch_number_from_bug_patch(patch_path)
+        tool_result = run_agent(
+            tool_template=tool_template,
+            prompt=prompt,
+            cwd=repo_root,
+            case_id="1",
+            bug_id=bug_id,
+        )
         record["tool_exit_code"] = tool_result.returncode
         log_command_result(
             "1",
@@ -493,7 +500,14 @@ def evaluate_case_2_impl(
             bug_report_content=bug_report_content,
         )
         log_case("2", "invoking fixer tool")
-        tool_result = run_agent(tool_template=tool_template, prompt=prompt, cwd=repo_root, case_id="2")
+        bug_id = patch_number_from_bug_patch(patch_path)
+        tool_result = run_agent(
+            tool_template=tool_template,
+            prompt=prompt,
+            cwd=repo_root,
+            case_id="2",
+            bug_id=bug_id,
+        )
         record["tool_exit_code"] = tool_result.returncode
         log_command_result(
             "2",
