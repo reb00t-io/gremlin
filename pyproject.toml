@@ -24,6 +24,10 @@ gremlin = "gremlin:main"
 package-dir = {"" = "src"}
 py-modules = ["gremlin_scan", "gremlin", "plot_token_report", "repo_root", "bug_generation"]
 
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["claude*"]
+
 [project.optional-dependencies]
 dev = [
   "prompt-toolkit>=3.0",

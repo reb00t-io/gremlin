@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from claude.claude_runner import run_claude
+
 
 class CmdResultLike(Protocol):
     returncode: int
@@ -91,7 +93,7 @@ def build_claude_prompt(source_file: Path, existing_patch_context: str) -> str:
         existing_section = "No previous bug patches exist for this file."
 
     return (
-        "You are editing a git repository via Claude Code.\n"
+        "You are editing a git repository.\n"
         f"Target file: {source_file.as_posix()}\n\n"
         "Task:\n"
         "- Introduce exactly one bug in the target file that should cause the adjacent _test file to fail.\n"
@@ -162,7 +164,10 @@ def generate_bug_patches_for_file(
             f"claude start file={source_file.as_posix()} "
             f"step={step_index + 1}/{steps_per_file} patch={patch_path.relative_to(repo_root).as_posix()}",
         )
-        claude = run_cmd(["claude", "-p", prompt, "--dangerously-skip-permissions"], cwd=repo_root, check=False)
+        claude = run_claude(
+            prompt=prompt,
+            repo_root=repo_root,
+        )
         print(f"[claude] exit code: {claude.returncode}")
         append_run_log(log_path, f"claude exit code={claude.returncode}")
         append_run_log(log_path, f"claude stdout:\n{claude.stdout}")

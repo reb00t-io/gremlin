@@ -31,6 +31,7 @@ def run_cmd(cmd: list[str], cwd: Path, check: bool = False) -> CmdResult:
     proc = subprocess.run(
         cmd,
         cwd=str(cwd),
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         check=False,
@@ -39,8 +40,8 @@ def run_cmd(cmd: list[str], cwd: Path, check: bool = False) -> CmdResult:
     if check and proc.returncode != 0:
         raise RuntimeError(
             f"Command failed ({proc.returncode}): {shlex.join(cmd)}\n"
-            f"stdout:\n{proc.stdout}\n"
-            f"stderr:\n{proc.stderr}"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
         )
     return result
 
@@ -151,6 +152,25 @@ def verify_patch(
         append_jsonl(results_file, record)
         return
 
+    pre_test_result = run_cmd(test_cmd, cwd=repo_root, check=False)
+    record.update(
+        {
+            "precheck_exit_code": pre_test_result.returncode,
+            "precheck_stdout_tail": pre_test_result.stdout[-2000:],
+            "precheck_stderr_tail": pre_test_result.stderr[-2000:],
+        }
+    )
+    if pre_test_result.returncode != 0:
+        record.update(
+            {
+                "applied": False,
+                "works": False,
+                "error": "precheck_failed",
+            }
+        )
+        append_jsonl(results_file, record)
+        return
+
     apply_result = run_cmd(["git", "apply", patch_path.as_posix()], cwd=repo_root, check=False)
     if apply_result.returncode != 0:
         record.update(
@@ -235,6 +255,11 @@ def main() -> int:
                 )
             print(f"Details logged to {run_log_path}", file=sys.stderr)
             return 1
+        except KeyboardInterrupt:
+            append_run_log(run_log_path, "interrupted by user (Ctrl-C)")
+            print("Interrupted by user (Ctrl-C).", file=sys.stderr)
+            print(f"Details logged to {run_log_path}", file=sys.stderr)
+            return 130
 
     print(f"\nVerification results written to {results_file}")
     append_run_log(run_log_path, f"gremlin completed results_file={results_file.as_posix()}")
