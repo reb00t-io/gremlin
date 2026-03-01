@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,6 +38,10 @@ def patch_path_for_source(source_file: Path, repo_root: Path, patch_no: int) -> 
 
 def fix_patch_path_for_source(source_file: Path, repo_root: Path, patch_no: int) -> Path:
     return patch_dir_for_source(source_file, repo_root) / f"{source_file.name}.test-{patch_no}.patch"
+
+
+def overview_path_for_source(source_file: Path, repo_root: Path, patch_no: int) -> Path:
+    return patch_dir_for_source(source_file, repo_root) / f"{source_file.name}.overview-{patch_no}.json"
 
 
 def patch_files_for_source(source_file: Path, repo_root: Path) -> list[Path]:
@@ -172,6 +177,30 @@ def create_patch_for_test(
     return True
 
 
+def write_patch_overview(
+    source_file: Path,
+    repo_root: Path,
+    patch_no: int,
+    bug_patch_path: Path,
+    test_patch_path: Path,
+    report_file: Path,
+    run_cmd: RunCmd,
+) -> Path:
+    commit = run_cmd(["git", "rev-parse", "HEAD"], cwd=repo_root, check=True).stdout.strip()
+    overview_path = overview_path_for_source(source_file, repo_root, patch_no)
+    overview_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "created_at": datetime.now(UTC).isoformat(),
+        "base_commit": commit,
+        "source_file": source_file.as_posix(),
+        "bug_patch": bug_patch_path.relative_to(repo_root).as_posix(),
+        "test_patch": test_patch_path.relative_to(repo_root).as_posix(),
+        "bug_report": report_file.as_posix(),
+    }
+    overview_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return overview_path
+
+
 def revert_source_file(
     source_file: Path,
     repo_root: Path,
@@ -196,6 +225,7 @@ def generate_bug_patches_for_file(
         patch_no = next_patch_number(source_file, repo_root)
         patch_path = patch_path_for_source(source_file, repo_root, patch_no)
         test_patch_path = fix_patch_path_for_source(source_file, repo_root, patch_no)
+        overview_path = overview_path_for_source(source_file, repo_root, patch_no)
 
         if dry_run:
             generated.append(patch_path)
@@ -212,6 +242,10 @@ def generate_bug_patches_for_file(
             append_run_log(
                 log_path,
                 f"dry-run expects report output at {report_file.as_posix()}",
+            )
+            append_run_log(
+                log_path,
+                f"dry-run generated placeholder for overview -> {overview_path.relative_to(repo_root).as_posix()}",
             )
             continue
 
@@ -309,6 +343,20 @@ def generate_bug_patches_for_file(
                     f"No diff produced for {test_file.as_posix()} and {report_file.as_posix()} after claude run; "
                     "cannot create test patch"
                 )
+
+            overview = write_patch_overview(
+                source_file=source_file,
+                repo_root=repo_root,
+                patch_no=patch_no,
+                bug_patch_path=patch_path,
+                test_patch_path=test_patch_path,
+                report_file=report_file,
+                run_cmd=run_cmd,
+            )
+            append_run_log(
+                log_path,
+                f"overview created {overview.relative_to(repo_root).as_posix()}",
+            )
 
             generated.append(patch_path)
         finally:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -8,8 +9,10 @@ from bug_generation import (
     create_patch_for_test,
     fix_patch_files_for_source,
     fix_patch_path_for_source,
+    overview_path_for_source,
     patch_files_for_source,
     patch_path_for_source,
+    write_patch_overview,
 )
 from gremlin_core import run_cmd
 
@@ -91,3 +94,41 @@ def test_bug_report_is_only_in_test_patch(tmp_path: Path) -> None:
 
     assert "bug_report.txt" not in bug_patch
     assert "bug_report.txt" in test_patch
+
+
+def test_overview_is_written_with_commit_and_timestamp(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+
+    source_file = Path("src/module.py")
+    bug_patch = patch_path_for_source(source_file, repo_root, 1)
+    test_patch = fix_patch_path_for_source(source_file, repo_root, 1)
+    report_file = Path("bug_report.txt")
+
+    bug_patch.parent.mkdir(parents=True, exist_ok=True)
+    bug_patch.write_text("diff bug\n", encoding="utf-8")
+    test_patch.write_text("diff test\n", encoding="utf-8")
+
+    def fake_run_cmd(cmd, cwd, check=False):  # type: ignore[no-untyped-def]
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return type("Result", (), {"returncode": 0, "stdout": "abc123\n", "stderr": ""})()
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    overview = write_patch_overview(
+        source_file=source_file,
+        repo_root=repo_root,
+        patch_no=1,
+        bug_patch_path=bug_patch,
+        test_patch_path=test_patch,
+        report_file=report_file,
+        run_cmd=fake_run_cmd,
+    )
+
+    assert overview == overview_path_for_source(source_file, repo_root, 1)
+    payload = json.loads(overview.read_text(encoding="utf-8"))
+    assert payload["base_commit"] == "abc123"
+    assert payload["source_file"] == "src/module.py"
+    assert payload["bug_patch"] == ".gremlin/bugs/src/module.py.bug-1.patch"
+    assert payload["test_patch"] == ".gremlin/bugs/src/module.py.test-1.patch"
+    assert payload["bug_report"] == "bug_report.txt"
+    assert "created_at" in payload

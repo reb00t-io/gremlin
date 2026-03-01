@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 import gremlin_eval as ge
 
@@ -116,8 +118,83 @@ def test_main_runs_both_cases_by_default(monkeypatch, tmp_path: Path) -> None:  
 
     seen_cases: list[str] = []
 
-    def fake_evaluate_patch(*, patch_path, repo_root, tool_template, case_id):  # type: ignore[no-untyped-def]
+    def fake_evaluate_patch(*, source_repo_root, source_patch_path, tool_template, case_id):  # type: ignore[no-untyped-def]
         seen_cases.append(case_id)
+        return {
+            "timestamp": "now",
+            "case": case_id,
+            "patch": source_patch_path.relative_to(source_repo_root).as_posix(),
+            "success": True,
+            "error": None,
+        }
+
+    monkeypatch.setattr(ge, "evaluate_patch_at_overview_commit", fake_evaluate_patch)
+
+    code = ge.main()
+
+    assert code == 0
+    assert seen_cases == ["1", "2"]
+    assert results_path.exists()
+
+
+def test_evaluate_patch_at_overview_commit_missing_overview(tmp_path: Path) -> None:
+    repo_root = tmp_path
+    patch = _mk_bug_patch(repo_root)
+
+    result = ge.evaluate_patch_at_overview_commit(
+        source_repo_root=repo_root,
+        source_patch_path=patch,
+        tool_template="echo <PROMPT>",
+        case_id="1",
+    )
+
+    assert result["success"] is False
+    assert str(result["error"]).startswith("missing_overview:")
+
+
+def test_evaluate_patch_at_overview_commit_malformed_overview(tmp_path: Path) -> None:
+    repo_root = tmp_path
+    patch = _mk_bug_patch(repo_root)
+    overview_path = repo_root / ".gremlin" / "bugs" / "src" / "mod.py.overview-1.json"
+    overview_path.parent.mkdir(parents=True, exist_ok=True)
+    overview_path.write_text("not valid json{{{", encoding="utf-8")
+
+    result = ge.evaluate_patch_at_overview_commit(
+        source_repo_root=repo_root,
+        source_patch_path=patch,
+        tool_template="echo <PROMPT>",
+        case_id="1",
+    )
+
+    assert result["success"] is False
+    assert str(result["error"]).startswith("invalid_overview_json:")
+
+
+def test_evaluate_patch_at_overview_commit_uses_real_checkout(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    source_repo_root = Path(__file__).resolve().parents[1]
+    base_commit = ge.run_cmd(["git", "rev-parse", "HEAD"], cwd=source_repo_root, check=True).stdout.strip()
+
+    token = uuid4().hex[:8]
+    source_file = Path(f"src/eval_checkout_{token}.py")
+    patch_path = source_repo_root / ".gremlin" / "bugs" / "src" / f"eval_checkout_{token}.py.bug-1.patch"
+    overview_path = source_repo_root / ".gremlin" / "bugs" / "src" / f"eval_checkout_{token}.py.overview-1.json"
+
+    patch_path.parent.mkdir(parents=True, exist_ok=True)
+    patch_path.write_text("diff --git a/src/dummy.py b/src/dummy.py\n", encoding="utf-8")
+    overview_payload = {
+        "created_at": "2026-03-01T00:00:00+00:00",
+        "base_commit": base_commit,
+        "source_file": source_file.as_posix(),
+        "bug_patch": patch_path.relative_to(source_repo_root).as_posix(),
+        "test_patch": ".gremlin/bugs/src/dummy.test-1.patch",
+        "bug_report": "bug_report.txt",
+    }
+    overview_path.write_text(json.dumps(overview_payload, indent=2) + "\n", encoding="utf-8")
+
+    def fake_evaluate_patch(*, patch_path, repo_root, tool_template, case_id):  # type: ignore[no-untyped-def]
+        checked_out_commit = ge.run_cmd(["git", "rev-parse", "HEAD"], cwd=repo_root, check=True).stdout.strip()
+        assert checked_out_commit == base_commit
+        assert patch_path.is_file()
         return {
             "timestamp": "now",
             "case": case_id,
@@ -128,8 +205,19 @@ def test_main_runs_both_cases_by_default(monkeypatch, tmp_path: Path) -> None:  
 
     monkeypatch.setattr(ge, "evaluate_patch", fake_evaluate_patch)
 
-    code = ge.main()
+    try:
+        result = ge.evaluate_patch_at_overview_commit(
+            source_repo_root=source_repo_root,
+            source_patch_path=patch_path,
+            tool_template="echo <PROMPT>",
+            case_id="1",
+        )
+    finally:
+        if patch_path.exists():
+            patch_path.unlink()
+        if overview_path.exists():
+            overview_path.unlink()
 
-    assert code == 0
-    assert seen_cases == ["1", "2"]
-    assert results_path.exists()
+    assert result["success"] is True
+    assert result["evaluated_in_temp_checkout"] is True
+    assert result["base_commit"] == base_commit

@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import re
+import shutil
 import shlex
 import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-from bug_generation import fix_patch_path_for_source, patch_number_from_bug_patch
+from bug_generation import fix_patch_path_for_source, overview_path_for_source, patch_number_from_bug_patch
 from gremlin_core import append_jsonl, run_cmd, test_command_for_source
 from repo_root import discover_repo_root
 
@@ -133,6 +136,48 @@ def cleanup_bug_report(repo_root: Path) -> None:
     bug_report_abs = repo_root / bug_report
     if bug_report_abs.exists():
         bug_report_abs.unlink()
+
+
+def load_patch_overview(source_repo_root: Path, bug_patch_path: Path) -> dict:
+    source_file = source_file_for_patch(bug_patch_path, source_repo_root)
+    patch_no = patch_number_from_bug_patch(bug_patch_path)
+    overview_path = overview_path_for_source(source_file, source_repo_root, patch_no)
+    if not overview_path.is_file():
+        raise RuntimeError(f"missing_overview:{overview_path.relative_to(source_repo_root).as_posix()}")
+
+    try:
+        payload = json.loads(overview_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"invalid_overview_json:{overview_path.relative_to(source_repo_root).as_posix()}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"invalid_overview:{overview_path.relative_to(source_repo_root).as_posix()}")
+
+    base_commit = payload.get("base_commit")
+    if not isinstance(base_commit, str) or not base_commit.strip():
+        raise RuntimeError(f"invalid_overview_base_commit:{overview_path.relative_to(source_repo_root).as_posix()}")
+
+    payload["_overview_path"] = overview_path.relative_to(source_repo_root).as_posix()
+    payload["base_commit"] = base_commit.strip()
+    return payload
+
+
+def prepare_temp_checkout(source_repo_root: Path, base_commit: str) -> Path:
+    tmp_root = Path(tempfile.mkdtemp(prefix="gremlin-eval-"))
+    run_cmd(["git", "clone", "--quiet", source_repo_root.as_posix(), tmp_root.as_posix()], cwd=source_repo_root, check=True)
+    run_cmd(["git", "checkout", "--quiet", base_commit], cwd=tmp_root, check=True)
+    return tmp_root
+
+
+def copy_patch_to_checkout(source_repo_root: Path, checkout_root: Path, patch_path: Path) -> Path:
+    rel = patch_path.relative_to(source_repo_root)
+    dest = checkout_root / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(patch_path.read_text(encoding="utf-8"), encoding="utf-8")
+    return dest
+
+
+def remove_checkout(checkout_root: Path) -> None:
+    shutil.rmtree(checkout_root, ignore_errors=True)
 
 
 def evaluate_case_1(patch_path: Path, repo_root: Path, tool_template: str) -> dict:
@@ -294,6 +339,48 @@ def evaluate_patch(patch_path: Path, repo_root: Path, tool_template: str, case_i
     return evaluate_case_2(patch_path=patch_path, repo_root=repo_root, tool_template=tool_template)
 
 
+def evaluate_patch_at_overview_commit(
+    source_repo_root: Path,
+    source_patch_path: Path,
+    tool_template: str,
+    case_id: str,
+) -> dict:
+    try:
+        overview = load_patch_overview(source_repo_root, source_patch_path)
+    except RuntimeError as err:
+        return {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "case": case_id,
+            "patch": source_patch_path.relative_to(source_repo_root).as_posix(),
+            "success": False,
+            "error": str(err),
+        }
+
+    checkout_root = prepare_temp_checkout(source_repo_root, overview["base_commit"])
+    try:
+        checkout_bug_patch = copy_patch_to_checkout(source_repo_root, checkout_root, source_patch_path)
+        if case_id == "2":
+            source_file = source_file_for_patch(source_patch_path, source_repo_root)
+            patch_no = patch_number_from_bug_patch(source_patch_path)
+            source_test_patch = fix_patch_path_for_source(source_file, source_repo_root, patch_no)
+            if source_test_patch.is_file():
+                copy_patch_to_checkout(source_repo_root, checkout_root, source_test_patch)
+
+        result = evaluate_patch(
+            patch_path=checkout_bug_patch,
+            repo_root=checkout_root,
+            tool_template=tool_template,
+            case_id=case_id,
+        )
+        result["source_patch"] = source_patch_path.relative_to(source_repo_root).as_posix()
+        result["overview"] = overview.get("_overview_path")
+        result["base_commit"] = overview.get("base_commit")
+        result["evaluated_in_temp_checkout"] = True
+        return result
+    finally:
+        remove_checkout(checkout_root)
+
+
 def main() -> int:
     args = parse_args()
 
@@ -321,9 +408,9 @@ def main() -> int:
         for index, patch_path in enumerate(selected, start=1):
             patch_rel = patch_path.relative_to(repo_root).as_posix()
             print(f"[{index}/{len(selected)}] {patch_rel}")
-            result = evaluate_patch(
-                patch_path=patch_path,
-                repo_root=repo_root,
+            result = evaluate_patch_at_overview_commit(
+                source_repo_root=repo_root,
+                source_patch_path=patch_path,
                 tool_template=args.tool_command,
                 case_id=case_id,
             )
