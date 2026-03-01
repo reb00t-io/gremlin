@@ -19,7 +19,8 @@ def on_sigint(_signum: int, _frame) -> None:  # type: ignore[no-untyped-def]
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("-p", dest="prompt", default="")
-    parser.parse_known_args()
+    parser.add_argument("--max-ticks", type=int, default=None)
+    args, _ = parser.parse_known_args()
 
     signal.signal(signal.SIGINT, on_sigint)
 
@@ -28,6 +29,8 @@ def main() -> int:
 
     idx = 0
     while not interrupted:
+        if args.max_ticks is not None and idx >= args.max_ticks:
+            return 0
         payload = {
             "type": "content_block_delta",
             "delta": {"type": "text_delta", "text": f"tick-{idx} "},

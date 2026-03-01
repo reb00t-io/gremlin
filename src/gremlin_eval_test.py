@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shlex
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -137,6 +139,47 @@ def test_main_runs_both_cases_by_default(monkeypatch, tmp_path: Path) -> None:  
     assert results_path.exists()
 
 
+def test_run_tool_uses_claude_runner_for_plain_claude(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    called = {"claude": False, "popen": False}
+
+    def fake_run_claude(*, prompt, repo_root, claude_bin=None):  # type: ignore[no-untyped-def]
+        called["claude"] = True
+        assert prompt == "hello"
+        assert repo_root == tmp_path
+        assert claude_bin == "claude"
+        return SimpleNamespace(returncode=0, stdout="streamed", stderr="")
+
+    def fake_subprocess_popen(*args, **kwargs):  # type: ignore[no-untyped-def]
+        called["popen"] = True
+        raise AssertionError("subprocess.Popen should not be used for plain 'claude'")
+
+    monkeypatch.setattr(ge, "run_claude", fake_run_claude)
+    monkeypatch.setattr(ge.subprocess, "Popen", fake_subprocess_popen)
+
+    result = ge.run_tool("claude", "hello", tmp_path)
+
+    assert called["claude"] is True
+    assert called["popen"] is False
+    assert result.returncode == 0
+    assert result.stdout == "streamed"
+
+
+def test_run_tool_non_claude_uses_mock_claude_streaming(tmp_path: Path) -> None:
+    mock_path = Path(__file__).resolve().parent / "claude" / "mock_claude.py"
+    tool_template = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(mock_path))} "
+        "-p <PROMPT> --max-ticks 2 --dangerously-skip-permissions "
+        "--output-format stream-json --verbose --include-partial-messages"
+    )
+
+    result = ge.run_tool(tool_template=tool_template, prompt="hello from test", cwd=tmp_path)
+
+    assert result.returncode == 0
+    assert "mock claude start" in result.stdout
+    assert "tick-0" in result.stdout
+    assert "tick-1" in result.stdout
+
+
 def test_evaluate_patch_at_overview_commit_missing_overview(tmp_path: Path) -> None:
     repo_root = tmp_path
     patch = _mk_bug_patch(repo_root)
@@ -191,19 +234,21 @@ def test_evaluate_patch_at_overview_commit_uses_real_checkout(monkeypatch) -> No
     }
     overview_path.write_text(json.dumps(overview_payload, indent=2) + "\n", encoding="utf-8")
 
-    def fake_evaluate_patch(*, patch_path, repo_root, tool_template, case_id):  # type: ignore[no-untyped-def]
+    def fake_evaluate_patch(*, patch_path, repo_root, tool_template, **kwargs):  # type: ignore[no-untyped-def]
         checked_out_commit = ge.run_cmd(["git", "rev-parse", "HEAD"], cwd=repo_root, check=True).stdout.strip()
         assert checked_out_commit == base_commit
+        assert patch_path == patch_path_outer
         assert patch_path.is_file()
         return {
             "timestamp": "now",
-            "case": case_id,
-            "patch": patch_path.relative_to(repo_root).as_posix(),
+            "case": "1",
+            "patch": patch_path.as_posix(),
             "success": True,
             "error": None,
         }
 
-    monkeypatch.setattr(ge, "evaluate_patch", fake_evaluate_patch)
+    patch_path_outer = patch_path
+    monkeypatch.setattr(ge, "evaluate_case_1", fake_evaluate_patch)
 
     try:
         result = ge.evaluate_patch_at_overview_commit(
