@@ -78,6 +78,35 @@ def prepare_temp_checkout(source_repo_root: Path, base_commit: str, run_cmd: Run
     return tmp_root
 
 
+def hide_git_metadata(repo_root: Path) -> Path | None:
+    git_dir = repo_root / ".git"
+    if not git_dir.exists():
+        return None
+
+    stash_root = Path(tempfile.mkdtemp(prefix="gremlin-eval-git-"))
+    shutil.move(git_dir.as_posix(), (stash_root / ".git").as_posix())
+    return stash_root
+
+
+def restore_git_metadata(repo_root: Path, stash_root: Path | None) -> None:
+    if stash_root is None:
+        return
+
+    hidden_git_dir = stash_root / ".git"
+    repo_git_dir = repo_root / ".git"
+
+    if hidden_git_dir.exists():
+        if repo_git_dir.is_dir():
+            shutil.rmtree(repo_git_dir, ignore_errors=True)
+        elif repo_git_dir.exists():
+            try:
+                repo_git_dir.unlink()
+            except OSError:
+                pass
+        shutil.move(hidden_git_dir.as_posix(), repo_git_dir.as_posix())
+    shutil.rmtree(stash_root, ignore_errors=True)
+
+
 def remove_checkout(checkout_root: Path) -> None:
     shutil.rmtree(checkout_root, ignore_errors=True)
 

@@ -2,18 +2,14 @@
 from __future__ import annotations
 
 import random
-import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 
-from claude.claude_runner import run_claude
 from gremlin_core import append_jsonl, run_cmd, test_command_for_source
 from gremlin_eval_cases import (
     evaluate_case_1_impl,
     evaluate_case_2_impl,
-    run_tool_impl,
 )
 from gremlin_eval_checkout import (
     checkout_path as checkout_path_impl,
@@ -33,16 +29,6 @@ from repo_root import discover_repo_root
 
 def parse_args():
     return parse_args_impl()
-
-
-def run_tool(tool_template: str, prompt: str, cwd: Path) -> SimpleNamespace:
-    return run_tool_impl(
-        tool_template=tool_template,
-        prompt=prompt,
-        cwd=cwd,
-        run_claude_fn=run_claude,
-        popen_factory=subprocess.Popen,
-    )
 
 
 def checkout_path(path: Path, repo_root: Path) -> None:
@@ -72,10 +58,8 @@ def evaluate_case_1(
         test_command_for_source=test_command_for_source,
         path_for_record=path_for_record,
         run_cmd=run_cmd,
-        run_tool=run_tool,
         checkout_path=checkout_path,
         cleanup_bug_report=cleanup_bug_report,
-        log_case=log_case,
         log_command_result=log_command_result,
         source_file=source_file,
         verbose=verbose,
@@ -98,10 +82,8 @@ def evaluate_case_2(
         test_command_for_source=test_command_for_source,
         path_for_record=path_for_record,
         run_cmd=run_cmd,
-        run_tool=run_tool,
         checkout_path=checkout_path,
         cleanup_bug_report=cleanup_bug_report,
-        log_case=log_case,
         log_command_result=log_command_result,
         source_file=source_file,
         test_patch_path=test_patch_path,

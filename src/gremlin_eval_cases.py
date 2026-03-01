@@ -1,24 +1,87 @@
 from __future__ import annotations
 
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from bug_generation import fix_patch_path_for_source, patch_number_from_bug_patch
+from claude.claude_runner import run_claude
+from gremlin_eval_checkout import hide_git_metadata, restore_git_metadata
+from gremlin_eval_logging import log_case
 
 
-RunCmd = Callable[[list[str], Path, bool], Any]
-RunTool = Callable[[str, str, Path], SimpleNamespace]
+class RunCmd(Protocol):
+    def __call__(self, cmd: list[str], cwd: Path, check: bool = False) -> Any: ...
+
 TestCommandForSource = Callable[[Path, Path], list[str]]
 PathForRecord = Callable[[Path, Path], str]
 CheckoutPath = Callable[[Path, Path], None]
 CleanupBugReport = Callable[[Path], None]
-LogCase = Callable[..., None]
 LogCommandResult = Callable[..., None]
+
+
+def _is_test_path(path: Path) -> bool:
+    name = path.name
+    if name.endswith("_test.py") or name.startswith("test_"):
+        return True
+    return "tests" in path.parts
+
+
+def _changed_test_paths_from_porcelain(porcelain: str) -> list[tuple[str, Path]]:
+    changed: list[tuple[str, Path]] = []
+    for raw_line in porcelain.splitlines():
+        line = raw_line.rstrip()
+        if len(line) < 4:
+            continue
+        status = line[:2]
+        path_part = line[3:]
+        candidates = [path_part]
+        if " -> " in path_part:
+            candidates = path_part.split(" -> ")
+        for candidate in candidates:
+            candidate_path = Path(candidate)
+            if _is_test_path(candidate_path):
+                changed.append((status, candidate_path))
+    return changed
+
+
+def reset_changed_test_files(repo_root: Path, run_cmd: RunCmd, case_id: str) -> list[Path]:
+    status_result = run_cmd(["git", "status", "--porcelain"], cwd=repo_root, check=False)
+    if status_result.returncode != 0:
+        log_case(case_id, "warning: failed to inspect changed files; skipping bulk test reset")
+        return []
+
+    changed_tests = _changed_test_paths_from_porcelain(status_result.stdout)
+    if not changed_tests:
+        return []
+
+    reset_paths: list[Path] = []
+    seen: set[str] = set()
+    for status, rel_path in changed_tests:
+        key = rel_path.as_posix()
+        if key in seen:
+            continue
+        seen.add(key)
+        abs_path = repo_root / rel_path
+
+        if status == "??":
+            if abs_path.is_dir():
+                shutil.rmtree(abs_path, ignore_errors=True)
+            elif abs_path.exists():
+                abs_path.unlink()
+            reset_paths.append(rel_path)
+            continue
+
+        run_cmd(["git", "checkout", "--", rel_path.as_posix()], cwd=repo_root, check=False)
+        reset_paths.append(rel_path)
+
+    return reset_paths
 
 
 def build_fix_prompt() -> str:
@@ -58,6 +121,7 @@ def run_tool_impl(
     run_claude_fn: Callable[..., Any],
     popen_factory: Callable[..., Any],
 ) -> SimpleNamespace:
+    log_case("tool", f"template={tool_template}")
     if tool_template.strip() == "claude":
         claude_result = run_claude_fn(prompt=prompt, repo_root=cwd, claude_bin="claude")
         return SimpleNamespace(
@@ -95,6 +159,34 @@ def run_tool_impl(
     return SimpleNamespace(returncode=proc.returncode, stdout="".join(stdout_lines), stderr="")
 
 
+def _snapshot_repo_for_debug(repo_root: Path) -> Path | None:
+    try:
+        snapshot_dir = Path(tempfile.mkdtemp(prefix="gremlin-eval-debug-"))
+        archive_base = snapshot_dir / f"{repo_root.name}-snapshot"
+        archive_path = Path(shutil.make_archive(archive_base.as_posix(), "zip", root_dir=repo_root.as_posix()))
+        return archive_path
+    except Exception as exc:
+        print(f"warning: failed to create debug snapshot before git restore: {exc}", file=sys.stderr)
+        return None
+
+
+def run_tool(tool_template: str, prompt: str, cwd: Path) -> SimpleNamespace:
+    hidden_git_dir = hide_git_metadata(cwd)
+    try:
+        return run_tool_impl(
+            tool_template=tool_template,
+            prompt=prompt,
+            cwd=cwd,
+            run_claude_fn=run_claude,
+            popen_factory=subprocess.Popen,
+        )
+    finally:
+        snapshot_path = _snapshot_repo_for_debug(cwd)
+        if snapshot_path is not None:
+            print(f"[eval] debug snapshot before git restore: {snapshot_path}")
+        restore_git_metadata(cwd, hidden_git_dir)
+
+
 def evaluate_case_1_impl(
     patch_path: Path,
     repo_root: Path,
@@ -104,10 +196,8 @@ def evaluate_case_1_impl(
     test_command_for_source: TestCommandForSource,
     path_for_record: PathForRecord,
     run_cmd: RunCmd,
-    run_tool: RunTool,
     checkout_path: CheckoutPath,
     cleanup_bug_report: CleanupBugReport,
-    log_case: LogCase,
     log_command_result: LogCommandResult,
     source_file: Path | None = None,
     verbose: bool = False,
@@ -227,10 +317,8 @@ def evaluate_case_2_impl(
     test_command_for_source: TestCommandForSource,
     path_for_record: PathForRecord,
     run_cmd: RunCmd,
-    run_tool: RunTool,
     checkout_path: CheckoutPath,
     cleanup_bug_report: CleanupBugReport,
-    log_case: LogCase,
     log_command_result: LogCommandResult,
     source_file: Path | None = None,
     test_patch_path: Path | None = None,
@@ -363,8 +451,11 @@ def evaluate_case_2_impl(
             record["error"] = "tool_failed"
             return record
 
-        log_case("2", "restoring original test file and rerunning target tests")
-        checkout_path(test_file, repo_root)
+        log_case("2", "resetting changed test files and rerunning target tests")
+        reset_tests = reset_changed_test_files(repo_root, run_cmd, "2")
+        record["reset_test_files"] = [path.as_posix() for path in reset_tests]
+        if reset_tests:
+            log_case("2", f"reset {len(reset_tests)} test file(s)")
         restored_test = run_cmd(test_cmd, cwd=repo_root, check=False)
         record["restored_test_exit_code"] = restored_test.returncode
         log_command_result(
