@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+import json
+import shlex
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Protocol
+
+from bug_generation import (
+    append_run_log,
+    generate_bug_patches_for_file,
+    patch_files_for_source,
+    revert_source_file,
+)
+
+
+class CmdResultLike(Protocol):
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+class RunCmd(Protocol):
+    def __call__(self, cmd: list[str], cwd: Path, check: bool = False) -> CmdResultLike: ...
+
+
+def git_tracked_files(repo_root: Path, run_cmd: RunCmd) -> list[Path]:
+    result = run_cmd(["git", "ls-files", "-z"], cwd=repo_root, check=True)
+    paths = result.stdout.split("\x00")
+    return sorted(Path(p) for p in paths if p)
+
+
+def is_source_candidate(file_path: Path, repo_root: Path) -> bool:
+    if file_path.name.endswith(".patch"):
+        return False
+    if file_path.stem.endswith("_test") or file_path.stem.startswith("test_"):
+        return False
+
+    test_file = file_path.with_name(f"{file_path.stem}_test{file_path.suffix}")
+    return (repo_root / test_file).is_file()
+
+
+def test_file_for_source(source_file: Path) -> Path:
+    return source_file.with_name(f"{source_file.stem}_test{source_file.suffix}")
+
+
+def test_command_for_source(source_file: Path, test_file: Path) -> list[str]:
+    suffix = test_file.suffix.lower()
+    if suffix == ".go":
+        return ["go", "test", f"./{test_file.parent.as_posix()}"]
+    return ["pytest", test_file.as_posix()]
+
+
+def append_jsonl(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
+
+
+def verify_patch(
+    source_file: Path,
+    patch_path: Path,
+    repo_root: Path,
+    results_file: Path,
+    dry_run: bool,
+    run_cmd: RunCmd,
+) -> None:
+    test_file = test_file_for_source(source_file)
+    test_cmd = test_command_for_source(source_file, test_file)
+
+    record: dict = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "file": source_file.as_posix(),
+        "patch": patch_path.relative_to(repo_root).as_posix(),
+        "test_file": test_file.as_posix(),
+        "test_command": shlex.join(test_cmd),
+    }
+
+    if dry_run:
+        record.update({"applied": False, "works": None, "note": "dry-run"})
+        append_jsonl(results_file, record)
+        return
+
+    pre_test_result = run_cmd(test_cmd, cwd=repo_root, check=False)
+    record.update(
+        {
+            "precheck_exit_code": pre_test_result.returncode,
+            "precheck_stdout_tail": pre_test_result.stdout[-2000:],
+            "precheck_stderr_tail": pre_test_result.stderr[-2000:],
+        }
+    )
+    if pre_test_result.returncode != 0:
+        record.update(
+            {
+                "applied": False,
+                "works": False,
+                "error": "precheck_failed",
+            }
+        )
+        append_jsonl(results_file, record)
+        return
+
+    apply_result = run_cmd(["git", "apply", patch_path.as_posix()], cwd=repo_root, check=False)
+    if apply_result.returncode != 0:
+        record.update(
+            {
+                "applied": False,
+                "works": False,
+                "error": "patch_apply_failed",
+                "stderr": apply_result.stderr,
+            }
+        )
+        append_jsonl(results_file, record)
+        return
+
+    test_result = run_cmd(test_cmd, cwd=repo_root, check=False)
+    works = test_result.returncode != 0 and test_result.returncode != 5
+    record.update(
+        {
+            "applied": True,
+            "works": works,
+            "test_exit_code": test_result.returncode,
+            "stdout_tail": test_result.stdout[-2000:],
+            "stderr_tail": test_result.stderr[-2000:],
+        }
+    )
+    append_jsonl(results_file, record)
+
+    revert_result = run_cmd(["git", "apply", "-R", patch_path.as_posix()], cwd=repo_root, check=False)
+    if revert_result.returncode != 0:
+        revert_source_file(source_file, repo_root, run_cmd=run_cmd)
+
+
+def process_source_file(
+    source_file: Path,
+    repo_root: Path,
+    steps_per_file: int,
+    dry_run: bool,
+    results_file: Path,
+    run_log_path: Path,
+    run_cmd: RunCmd,
+) -> None:
+    print(f"\n[generate] {source_file.as_posix()}")
+    generated = generate_bug_patches_for_file(
+        source_file=source_file,
+        repo_root=repo_root,
+        steps_per_file=steps_per_file,
+        dry_run=dry_run,
+        run_cmd=run_cmd,
+        log_path=run_log_path,
+    )
+    print(f"generated {len(generated)} patches")
+
+    print(f"[verify] {source_file.as_posix()}")
+    for patch_path in patch_files_for_source(source_file, repo_root):
+        verify_patch(
+            source_file=source_file,
+            patch_path=patch_path,
+            repo_root=repo_root,
+            results_file=results_file,
+            dry_run=dry_run,
+            run_cmd=run_cmd,
+        )
+
+
+def run_generation_and_verification(
+    repo_root: Path,
+    max_files: int,
+    steps_per_file: int,
+    dry_run: bool,
+    results_file: Path,
+    run_log_path: Path,
+    run_cmd: RunCmd,
+) -> int:
+    append_run_log(run_log_path, f"gremlin start repo_root={repo_root.as_posix()}")
+
+    tracked_files = git_tracked_files(repo_root, run_cmd=run_cmd)
+    candidates = [file for file in tracked_files if is_source_candidate(file, repo_root)]
+    selected = candidates[:max_files]
+
+    print(f"Found {len(candidates)} candidate files with adjacent _test files")
+    print(f"Processing up to {len(selected)} files, {steps_per_file} steps per file")
+
+    for source_file in selected:
+        try:
+            process_source_file(
+                source_file=source_file,
+                repo_root=repo_root,
+                steps_per_file=steps_per_file,
+                dry_run=dry_run,
+                results_file=results_file,
+                run_log_path=run_log_path,
+                run_cmd=run_cmd,
+            )
+        except RuntimeError as err:
+            append_run_log(
+                run_log_path,
+                f"error while processing {source_file.as_posix()}: {err}",
+            )
+            print(f"Error while processing {source_file.as_posix()}: {err}", file=sys.stderr)
+            if "pre-existing non-patch changes" in str(err):
+                print(
+                    "Tip: commit/stash/revert local changes in that target file, "
+                    "or run with --dry-run.",
+                    file=sys.stderr,
+                )
+            print(f"Details logged to {run_log_path}", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            append_run_log(run_log_path, "interrupted by user (Ctrl-C)")
+            print("Interrupted by user (Ctrl-C).", file=sys.stderr)
+            print(f"Details logged to {run_log_path}", file=sys.stderr)
+            return 130
+
+    print(f"\nVerification results written to {results_file}")
+    append_run_log(run_log_path, f"gremlin completed results_file={results_file.as_posix()}")
+    print(f"Run log: {run_log_path}")
+    return 0
