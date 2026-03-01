@@ -114,15 +114,16 @@ def build_fix_prompt_case2(
     )
 
 
-def run_tool_impl(
+def run_agent_impl(
     tool_template: str,
     prompt: str,
     cwd: Path,
+    case_id: str,
     *,
     run_claude_fn: Callable[..., Any],
     popen_factory: Callable[..., Any],
 ) -> SimpleNamespace:
-    log_case("tool", f"template={tool_template}")
+    log_case(case_id, f"run agent template={tool_template}")
     if tool_template.strip() == "claude":
         claude_result = run_claude_fn(prompt=prompt, repo_root=cwd, claude_bin="claude")
         return SimpleNamespace(
@@ -174,25 +175,26 @@ def _snapshot_repo_for_debug(repo_root: Path) -> Path | None:
         archive_path = Path(shutil.make_archive(archive_base.as_posix(), "zip", root_dir=repo_root.as_posix()))
         return archive_path
     except Exception as exc:
-        print(f"warning: failed to create debug snapshot before git restore: {exc}", file=sys.stderr)
+        print(f"warning: failed to create debug snapshot: {exc}", file=sys.stderr)
         return None
 
 
-def run_tool(tool_template: str, prompt: str, cwd: Path) -> SimpleNamespace:
+def run_agent(tool_template: str, prompt: str, cwd: Path, case_id: str) -> SimpleNamespace:
     hidden_git_dir = hide_git_metadata(cwd)
     try:
-        return run_tool_impl(
+        return run_agent_impl(
             tool_template=tool_template,
             prompt=prompt,
             cwd=cwd,
+            case_id=case_id,
             run_claude_fn=run_claude,
             popen_factory=subprocess.Popen,
         )
     finally:
+        restore_git_metadata(cwd, hidden_git_dir)
         snapshot_path = _snapshot_repo_for_debug(cwd)
         if snapshot_path is not None:
-            print(f"[eval] debug snapshot before git restore: {snapshot_path}")
-        restore_git_metadata(cwd, hidden_git_dir)
+            print(f"[eval] debug snapshot after git restore: {snapshot_path}")
 
 
 def evaluate_case_1_impl(
@@ -276,7 +278,7 @@ def evaluate_case_1_impl(
 
         prompt = build_fix_prompt()
         log_case("1", "invoking fixer tool")
-        tool_result = run_tool(tool_template=tool_template, prompt=prompt, cwd=repo_root)
+        tool_result = run_agent(tool_template=tool_template, prompt=prompt, cwd=repo_root, case_id="1")
         record["tool_exit_code"] = tool_result.returncode
         log_command_result(
             "1",
@@ -445,7 +447,7 @@ def evaluate_case_2_impl(
             bug_report_content=bug_report_content,
         )
         log_case("2", "invoking fixer tool")
-        tool_result = run_tool(tool_template=tool_template, prompt=prompt, cwd=repo_root)
+        tool_result = run_agent(tool_template=tool_template, prompt=prompt, cwd=repo_root, case_id="2")
         record["tool_exit_code"] = tool_result.returncode
         log_command_result(
             "2",

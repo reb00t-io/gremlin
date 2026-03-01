@@ -24,7 +24,7 @@ from gremlin_eval_checkout import (
     source_file_for_patch,
 )
 from gremlin_eval_cli import parse_args as parse_args_impl
-from gremlin_eval_logging import log_case, log_command_result, log_eval
+from gremlin_eval_logging import log_command_result, log_eval
 from repo_root import discover_repo_root
 
 

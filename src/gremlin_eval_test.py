@@ -80,15 +80,16 @@ def test_evaluate_case_1_hides_git_during_tool_run(monkeypatch, tmp_path: Path) 
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    def fake_run_tool_impl(*, tool_template, prompt, cwd, run_claude_fn, popen_factory):  # type: ignore[no-untyped-def]
+    def fake_run_agent_impl(*, tool_template, prompt, cwd, case_id, run_claude_fn, popen_factory):  # type: ignore[no-untyped-def]
         assert state["hidden"] is True
+        assert case_id == "1"
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(ge_cases, "hide_git_metadata", fake_hide_git_metadata)
     monkeypatch.setattr(ge_cases, "restore_git_metadata", fake_restore_git_metadata)
     monkeypatch.setattr(ge_cases, "_snapshot_repo_for_debug", lambda _: None)
     monkeypatch.setattr(ge, "run_cmd", fake_run_cmd)
-    monkeypatch.setattr(ge_cases, "run_tool_impl", fake_run_tool_impl)
+    monkeypatch.setattr(ge_cases, "run_agent_impl", fake_run_agent_impl)
 
     result = ge.evaluate_case_1(patch_path=patch, repo_root=repo_root, tool_template="echo <PROMPT>")
 
@@ -170,11 +171,12 @@ def test_evaluate_case_2_resets_all_changed_tests_before_final_check(monkeypatch
             return SimpleNamespace(returncode=1 if target_test_runs == 1 else 0, stdout="", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    def fake_run_tool(*, tool_template, prompt, cwd):  # type: ignore[no-untyped-def]
+    def fake_run_agent(*, tool_template, prompt, cwd, case_id):  # type: ignore[no-untyped-def]
+        assert case_id == "2"
         return SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr(ge, "run_cmd", fake_run_cmd)
-    monkeypatch.setattr(ge_cases, "run_tool", fake_run_tool)
+    monkeypatch.setattr(ge_cases, "run_agent", fake_run_agent)
 
     result = ge.evaluate_case_2(patch_path=patch, repo_root=repo_root, tool_template="echo <PROMPT>")
 
@@ -263,7 +265,7 @@ def test_main_runs_both_cases_by_default(monkeypatch, tmp_path: Path) -> None:  
     assert results_path.exists()
 
 
-def test_run_tool_uses_claude_runner_for_plain_claude(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+def test_run_agent_uses_claude_runner_for_plain_claude(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     called = {"claude": False, "popen": False}
     logs: list[tuple[str, str]] = []
 
@@ -285,16 +287,16 @@ def test_run_tool_uses_claude_runner_for_plain_claude(monkeypatch, tmp_path: Pat
     monkeypatch.setattr(ge_cases.subprocess, "Popen", fake_subprocess_popen)
     monkeypatch.setattr(ge_cases, "log_case", fake_log_case)
 
-    result = ge_cases.run_tool("claude", "hello", tmp_path)
+    result = ge_cases.run_agent("claude", "hello", tmp_path, case_id="1")
 
     assert called["claude"] is True
     assert called["popen"] is False
-    assert ("tool", "template=claude") in logs
+    assert ("1", "run agent template=claude") in logs
     assert result.returncode == 0
     assert result.stdout == "streamed"
 
 
-def test_run_tool_non_claude_uses_mock_claude_streaming(tmp_path: Path) -> None:
+def test_run_agent_non_claude_uses_mock_claude_streaming(tmp_path: Path) -> None:
     mock_path = Path(__file__).resolve().parent / "claude" / "mock_claude.py"
     tool_template = (
         f"{shlex.quote(sys.executable)} {shlex.quote(str(mock_path))} "
@@ -302,7 +304,7 @@ def test_run_tool_non_claude_uses_mock_claude_streaming(tmp_path: Path) -> None:
         "--output-format stream-json --verbose --include-partial-messages"
     )
 
-    result = ge_cases.run_tool(tool_template=tool_template, prompt="hello from test", cwd=tmp_path)
+    result = ge_cases.run_agent(tool_template=tool_template, prompt="hello from test", cwd=tmp_path, case_id="2")
 
     assert result.returncode == 0
     assert "mock claude start" in result.stdout
@@ -310,7 +312,7 @@ def test_run_tool_non_claude_uses_mock_claude_streaming(tmp_path: Path) -> None:
     assert "tick-1" in result.stdout
 
 
-def test_run_tool_hides_git_and_snapshots_before_restore(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+def test_run_agent_hides_git_and_snapshots_after_restore(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     state = {"hidden": False, "restored": False, "snapshotted": False}
 
     def fake_hide_git_metadata(_repo_root):  # type: ignore[no-untyped-def]
@@ -318,25 +320,27 @@ def test_run_tool_hides_git_and_snapshots_before_restore(monkeypatch, tmp_path: 
         return Path("/tmp/fake-git-stash")
 
     def fake_snapshot(_repo_root):  # type: ignore[no-untyped-def]
-        assert state["hidden"] is True
+        assert state["hidden"] is False
+        assert state["restored"] is True
         state["snapshotted"] = True
         return Path("/tmp/fake-debug.zip")
 
     def fake_restore_git_metadata(_repo_root, _stash_root):  # type: ignore[no-untyped-def]
-        assert state["snapshotted"] is True
+        assert state["snapshotted"] is False
         state["hidden"] = False
         state["restored"] = True
 
-    def fake_run_tool_impl(*, tool_template, prompt, cwd, run_claude_fn, popen_factory):  # type: ignore[no-untyped-def]
+    def fake_run_agent_impl(*, tool_template, prompt, cwd, case_id, run_claude_fn, popen_factory):  # type: ignore[no-untyped-def]
         assert state["hidden"] is True
+        assert case_id == "1"
         return SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr(ge_cases, "hide_git_metadata", fake_hide_git_metadata)
     monkeypatch.setattr(ge_cases, "_snapshot_repo_for_debug", fake_snapshot)
     monkeypatch.setattr(ge_cases, "restore_git_metadata", fake_restore_git_metadata)
-    monkeypatch.setattr(ge_cases, "run_tool_impl", fake_run_tool_impl)
+    monkeypatch.setattr(ge_cases, "run_agent_impl", fake_run_agent_impl)
 
-    result = ge_cases.run_tool(tool_template="echo <PROMPT>", prompt="hi", cwd=tmp_path)
+    result = ge_cases.run_agent(tool_template="echo <PROMPT>", prompt="hi", cwd=tmp_path, case_id="1")
 
     assert result.returncode == 0
     assert state["snapshotted"] is True
