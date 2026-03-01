@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 import sys
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -114,44 +115,49 @@ def evaluate_patch_at_overview_commit(
     case_id: str,
     verbose: bool = False,
 ) -> dict:
-    log_eval(
-        f"load overview for patch={source_patch_path.relative_to(source_repo_root).as_posix()}",
-        verbose=verbose,
-        verbose_only=True,
-    )
+    snapshot_root = source_repo_root / ".gremlin" / "debug-snapshots"
+    previous_snapshot_root = os.environ.get("GREMLIN_EVAL_SNAPSHOT_ROOT")
+    os.environ["GREMLIN_EVAL_SNAPSHOT_ROOT"] = snapshot_root.as_posix()
+    checkout_root: Path | None = None
     try:
-        overview = load_patch_overview(source_repo_root, source_patch_path)
-    except RuntimeError as err:
-        return {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "case": case_id,
-            "patch": source_patch_path.relative_to(source_repo_root).as_posix(),
-            "success": False,
-            "error": str(err),
-        }
+        log_eval(
+            f"load overview for patch={source_patch_path.relative_to(source_repo_root).as_posix()}",
+            verbose=verbose,
+            verbose_only=True,
+        )
+        try:
+            overview = load_patch_overview(source_repo_root, source_patch_path)
+        except RuntimeError as err:
+            return {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "case": case_id,
+                "patch": source_patch_path.relative_to(source_repo_root).as_posix(),
+                "success": False,
+                "error": str(err),
+            }
 
-    source_file_value = overview.get("source_file")
-    if not isinstance(source_file_value, str) or not source_file_value.strip():
-        return {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "case": case_id,
-            "patch": source_patch_path.relative_to(source_repo_root).as_posix(),
-            "success": False,
-            "error": f"invalid_overview_source_file:{overview.get('_overview_path')}",
-        }
-    source_file = Path(source_file_value)
+        source_file_value = overview.get("source_file")
+        if not isinstance(source_file_value, str) or not source_file_value.strip():
+            return {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "case": case_id,
+                "patch": source_patch_path.relative_to(source_repo_root).as_posix(),
+                "success": False,
+                "error": f"invalid_overview_source_file:{overview.get('_overview_path')}",
+            }
+        source_file = Path(source_file_value)
 
-    log_eval(
-        (
-            f"prepare temp checkout at commit={overview['base_commit']} "
-            f"(overview={overview.get('_overview_path')})"
-        ),
-        verbose=verbose,
-        verbose_only=True,
-    )
-    checkout_root = prepare_temp_checkout(source_repo_root, overview["base_commit"], case_id=case_id)
-    log_eval(f"using temp checkout ({case_id}): {checkout_root}")
-    try:
+        log_eval(
+            (
+                f"prepare temp checkout at commit={overview['base_commit']} "
+                f"(overview={overview.get('_overview_path')})"
+            ),
+            verbose=verbose,
+            verbose_only=True,
+        )
+        checkout_root = prepare_temp_checkout(source_repo_root, overview["base_commit"], case_id=case_id)
+        log_eval(f"using temp checkout ({case_id}): {checkout_root}")
+
         if case_id == "2":
             source_test_patch = resolve_test_patch_path(
                 overview=overview,
@@ -182,8 +188,13 @@ def evaluate_patch_at_overview_commit(
         result["evaluated_in_temp_checkout"] = True
         return result
     finally:
-        log_eval(f"remove temp checkout {checkout_root}", verbose=verbose, verbose_only=True)
-        remove_checkout(checkout_root)
+        if previous_snapshot_root is None:
+            os.environ.pop("GREMLIN_EVAL_SNAPSHOT_ROOT", None)
+        else:
+            os.environ["GREMLIN_EVAL_SNAPSHOT_ROOT"] = previous_snapshot_root
+        if checkout_root is not None:
+            log_eval(f"remove temp checkout {checkout_root}", verbose=verbose, verbose_only=True)
+            remove_checkout(checkout_root)
 
 
 def main() -> int:
