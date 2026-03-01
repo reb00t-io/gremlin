@@ -22,7 +22,7 @@ gremlin = "gremlin:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["gremlin_scan", "gremlin", "plot_token_report", "repo_root", "bug_generation"]
+py-modules = ["gremlin_scan", "gremlin", "gremlin_cmd", "plot_token_report", "repo_root", "bug_generation"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
