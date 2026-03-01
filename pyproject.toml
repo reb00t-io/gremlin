@@ -27,7 +27,7 @@ py-modules = ["gremlin_scan", "gremlin", "gremlin_cmd", "gremlin_eval", "plot_to
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["claude*"]
+include = ["agents*"]
 
 [project.optional-dependencies]
 dev = [

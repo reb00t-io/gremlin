@@ -12,7 +12,8 @@ from types import SimpleNamespace
 from typing import Any, Callable, Protocol
 
 from bug_generation import fix_patch_path_for_source, patch_number_from_bug_patch
-from claude.claude_runner import run_claude
+from agents.claude_runner import run_claude
+from agents.opencode_runner import run_opencode
 from gremlin_eval_checkout import hide_git_metadata, restore_git_metadata
 from gremlin_eval_logging import log_case
 
@@ -156,17 +157,21 @@ def run_agent_impl(
     prompt: str,
     cwd: Path,
     case_id: str,
-    *,
-    run_claude_fn: Callable[..., Any],
-    popen_factory: Callable[..., Any],
 ) -> SimpleNamespace:
     log_case(case_id, f"run agent template={tool_template}")
     if tool_template.strip() == "claude":
-        claude_result = run_claude_fn(prompt=prompt, repo_root=cwd, claude_bin="claude")
+        claude_result = run_claude(prompt=prompt, repo_root=cwd, claude_bin="claude")
         return SimpleNamespace(
             returncode=claude_result.returncode,
             stdout=claude_result.stdout,
             stderr=claude_result.stderr,
+        )
+    if tool_template.strip() == "opencode":
+        opencode_result = run_opencode(prompt=prompt, repo_root=cwd, opencode_bin="opencode")
+        return SimpleNamespace(
+            returncode=opencode_result.returncode,
+            stdout=opencode_result.stdout,
+            stderr=opencode_result.stderr,
         )
 
     prompt_token = "__GREMLIN_PROMPT__"
@@ -177,7 +182,7 @@ def run_agent_impl(
         command = [*shlex.split(tool_template), prompt]
 
     stdout_lines: list[str] = []
-    proc = popen_factory(
+    proc = subprocess.Popen(
         command,
         cwd=str(cwd),
         stdin=subprocess.DEVNULL,
@@ -208,7 +213,7 @@ def _snapshot_repo_for_debug(repo_root: Path, case_id: str, bug_id: str | int) -
             snapshot_dir = Path(tempfile.mkdtemp(prefix="gremlin-eval-debug-"))
 
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        archive_base = snapshot_dir / f"bug{bug_id}-case{case_id}-{timestamp}-{repo_root.name}-snapshot"
+        archive_base = snapshot_dir / f"{timestamp}-bug{bug_id}-case{case_id}-{repo_root.name}-snapshot"
         archive_path = Path(shutil.make_archive(archive_base.as_posix(), "zip", root_dir=repo_root.as_posix()))
         return archive_path
     except Exception as exc:
@@ -224,8 +229,6 @@ def run_agent(tool_template: str, prompt: str, cwd: Path, case_id: str, bug_id: 
             prompt=prompt,
             cwd=cwd,
             case_id=case_id,
-            run_claude_fn=run_claude,
-            popen_factory=subprocess.Popen,
         )
     finally:
         restore_git_metadata(cwd, hidden_git_dir)

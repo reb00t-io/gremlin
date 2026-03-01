@@ -82,7 +82,7 @@ def test_evaluate_case_1_hides_git_during_tool_run(monkeypatch, tmp_path: Path) 
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    def fake_run_agent_impl(*, tool_template, prompt, cwd, case_id, run_claude_fn, popen_factory):  # type: ignore[no-untyped-def]
+    def fake_run_agent_impl(*, tool_template, prompt, cwd, case_id):  # type: ignore[no-untyped-def]
         assert state["hidden"] is True
         assert case_id == "1"
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -303,8 +303,39 @@ def test_run_agent_uses_claude_runner_for_plain_claude(monkeypatch, tmp_path: Pa
     assert result.stdout == "streamed"
 
 
+def test_run_agent_uses_opencode_runner_for_plain_opencode(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    called = {"opencode": False, "popen": False}
+    logs: list[tuple[str, str]] = []
+
+    def fake_run_opencode(*, prompt, repo_root, opencode_bin=None):  # type: ignore[no-untyped-def]
+        called["opencode"] = True
+        assert prompt == "hello"
+        assert repo_root == tmp_path
+        assert opencode_bin == "opencode"
+        return SimpleNamespace(returncode=0, stdout="streamed", stderr="")
+
+    def fake_subprocess_popen(*args, **kwargs):  # type: ignore[no-untyped-def]
+        called["popen"] = True
+        raise AssertionError("subprocess.Popen should not be used for plain 'opencode'")
+
+    def fake_log_case(case_id: str, message: str, **kwargs):  # type: ignore[no-untyped-def]
+        logs.append((case_id, message))
+
+    monkeypatch.setattr(ge_cases, "run_opencode", fake_run_opencode)
+    monkeypatch.setattr(ge_cases.subprocess, "Popen", fake_subprocess_popen)
+    monkeypatch.setattr(ge_cases, "log_case", fake_log_case)
+
+    result = ge_cases.run_agent("opencode", "hello", tmp_path, case_id="1", bug_id=1)
+
+    assert called["opencode"] is True
+    assert called["popen"] is False
+    assert ("1", "run agent template=opencode") in logs
+    assert result.returncode == 0
+    assert result.stdout == "streamed"
+
+
 def test_run_agent_non_claude_uses_mock_claude_streaming(tmp_path: Path) -> None:
-    mock_path = Path(__file__).resolve().parent / "claude" / "mock_claude.py"
+    mock_path = Path(__file__).resolve().parent / "agents" / "mock_claude.py"
     tool_template = (
         f"{shlex.quote(sys.executable)} {shlex.quote(str(mock_path))} "
         "-p <PROMPT> --max-ticks 2 --dangerously-skip-permissions "
@@ -339,7 +370,7 @@ def test_run_agent_hides_git_and_snapshots_after_restore(monkeypatch, tmp_path: 
         state["hidden"] = False
         state["restored"] = True
 
-    def fake_run_agent_impl(*, tool_template, prompt, cwd, case_id, run_claude_fn, popen_factory):  # type: ignore[no-untyped-def]
+    def fake_run_agent_impl(*, tool_template, prompt, cwd, case_id):  # type: ignore[no-untyped-def]
         assert state["hidden"] is True
         assert case_id == "1"
         return SimpleNamespace(returncode=0, stdout="ok", stderr="")

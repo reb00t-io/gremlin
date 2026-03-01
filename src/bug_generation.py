@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
-from claude.claude_runner import run_claude
+from agents.claude_runner import run_claude
 
 
 class CmdResultLike(Protocol):
