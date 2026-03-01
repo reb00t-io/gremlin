@@ -10,7 +10,9 @@ from pathlib import Path
 
 from bug_generation import (
     append_run_log,
+    fix_patch_path_for_source,
     generate_bug_patches_for_file,
+    patch_number_from_bug_patch,
     patch_files_for_source,
     revert_source_file,
 )
@@ -77,7 +79,8 @@ def append_jsonl(path: Path, record: dict) -> None:
 
 def verify_patch(
     source_file: Path,
-    patch_path: Path,
+    bug_patch_path: Path,
+    test_patch_path: Path,
     repo_root: Path,
     results_file: Path,
     dry_run: bool,
@@ -88,13 +91,25 @@ def verify_patch(
     record: dict = {
         "timestamp": datetime.now(UTC).isoformat(),
         "file": source_file.as_posix(),
-        "patch": patch_path.relative_to(repo_root).as_posix(),
+        "bug_patch": bug_patch_path.relative_to(repo_root).as_posix(),
+        "test_patch": test_patch_path.relative_to(repo_root).as_posix(),
         "test_file": test_file.as_posix(),
         "test_command": shlex.join(test_cmd),
     }
 
     if dry_run:
         record.update({"applied": False, "works": None, "note": "dry-run"})
+        append_jsonl(results_file, record)
+        return
+
+    if not test_patch_path.is_file():
+        record.update(
+            {
+                "applied": False,
+                "works": False,
+                "error": "missing_test_patch",
+            }
+        )
         append_jsonl(results_file, record)
         return
 
@@ -117,35 +132,83 @@ def verify_patch(
         append_jsonl(results_file, record)
         return
 
-    apply_result = run_cmd(["git", "apply", patch_path.as_posix()], cwd=repo_root, check=False)
-    if apply_result.returncode != 0:
+    apply_bug_result = run_cmd(["git", "apply", bug_patch_path.as_posix()], cwd=repo_root, check=False)
+    if apply_bug_result.returncode != 0:
         record.update(
             {
                 "applied": False,
                 "works": False,
-                "error": "patch_apply_failed",
-                "stderr": apply_result.stderr,
+                "error": "bug_patch_apply_failed",
+                "stderr": apply_bug_result.stderr,
             }
         )
         append_jsonl(results_file, record)
         return
 
-    test_result = run_cmd(test_cmd, cwd=repo_root, check=False)
-    works = test_result.returncode != 0 and test_result.returncode != 5
-    record.update(
-        {
-            "applied": True,
-            "works": works,
-            "test_exit_code": test_result.returncode,
-            "stdout_tail": test_result.stdout[-2000:],
-            "stderr_tail": test_result.stderr[-2000:],
-        }
-    )
-    append_jsonl(results_file, record)
+    apply_test_result = None
+    try:
+        failing_test_result = run_cmd(test_cmd, cwd=repo_root, check=False)
+        bug_causes_failure = failing_test_result.returncode != 0 and failing_test_result.returncode != 5
+        record.update(
+            {
+                "bug_applied": True,
+                "bug_test_exit_code": failing_test_result.returncode,
+                "bug_test_stdout_tail": failing_test_result.stdout[-2000:],
+                "bug_test_stderr_tail": failing_test_result.stderr[-2000:],
+                "bug_causes_failure": bug_causes_failure,
+            }
+        )
 
-    revert_result = run_cmd(["git", "apply", "-R", patch_path.as_posix()], cwd=repo_root, check=False)
-    if revert_result.returncode != 0:
-        revert_source_file(source_file, repo_root, run_cmd=run_cmd)
+        if not bug_causes_failure:
+            record.update(
+                {
+                    "applied": True,
+                    "works": False,
+                    "error": "bug_patch_did_not_fail_test",
+                }
+            )
+            append_jsonl(results_file, record)
+            return
+
+        apply_test_result = run_cmd(["git", "apply", test_patch_path.as_posix()], cwd=repo_root, check=False)
+        if apply_test_result.returncode != 0:
+            record.update(
+                {
+                    "applied": True,
+                    "works": False,
+                    "error": "test_patch_apply_failed",
+                    "test_patch_stderr": apply_test_result.stderr,
+                }
+            )
+            append_jsonl(results_file, record)
+            return
+
+        all_tests_result = run_cmd(["pytest"], cwd=repo_root, check=False)
+        works = all_tests_result.returncode == 0
+        record.update(
+            {
+                "applied": True,
+                "works": works,
+                "all_tests_exit_code": all_tests_result.returncode,
+                "all_tests_stdout_tail": all_tests_result.stdout[-2000:],
+                "all_tests_stderr_tail": all_tests_result.stderr[-2000:],
+            }
+        )
+        append_jsonl(results_file, record)
+    finally:
+        if apply_test_result is not None and apply_test_result.returncode == 0:
+            revert_test_result = run_cmd(
+                ["git", "apply", "-R", test_patch_path.as_posix()],
+                cwd=repo_root,
+                check=False,
+            )
+            if revert_test_result.returncode != 0:
+                revert_source_file(test_file, repo_root, run_cmd=run_cmd)
+
+        revert_bug_result = run_cmd(["git", "apply", "-R", bug_patch_path.as_posix()], cwd=repo_root, check=False)
+        if revert_bug_result.returncode != 0:
+            revert_source_file(source_file, repo_root, run_cmd=run_cmd)
+            revert_source_file(test_file, repo_root, run_cmd=run_cmd)
 
 
 def process_source_file(
@@ -168,10 +231,13 @@ def process_source_file(
     print(f"generated {len(generated)} patches")
 
     print(f"[verify] {source_file.as_posix()}")
-    for patch_path in patch_files_for_source(source_file, repo_root):
+    for bug_patch_path in patch_files_for_source(source_file, repo_root):
+        patch_no = patch_number_from_bug_patch(bug_patch_path)
+        test_patch_path = fix_patch_path_for_source(source_file, repo_root, patch_no)
         verify_patch(
             source_file=source_file,
-            patch_path=patch_path,
+            bug_patch_path=bug_patch_path,
+            test_patch_path=test_patch_path,
             repo_root=repo_root,
             results_file=results_file,
             dry_run=dry_run,
