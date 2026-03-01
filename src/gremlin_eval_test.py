@@ -57,6 +57,33 @@ def test_evaluate_case_2_missing_test_patch(tmp_path: Path) -> None:
     assert result["error"] == "missing_test_patch"
 
 
+def test_evaluate_case_2_missing_bug_report(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    repo_root = tmp_path
+    patch = _mk_bug_patch(repo_root)
+    source_file = ge.source_file_for_patch(patch, repo_root)
+    test_patch = ge.fix_patch_path_for_source(source_file, repo_root, 1)
+    test_patch.parent.mkdir(parents=True, exist_ok=True)
+    test_patch.write_text("dummy patch\n", encoding="utf-8")
+
+    def fake_run_cmd(cmd, cwd, check=False):  # type: ignore[no-untyped-def]
+        if cmd == ["pytest"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd and cmd[0] == "pytest" and len(cmd) > 1:
+            return SimpleNamespace(returncode=1, stdout="failing test", stderr="")
+        if cmd[:2] == ["git", "apply"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd[:3] == ["git", "checkout", "--"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ge, "run_cmd", fake_run_cmd)
+
+    result = ge.evaluate_case_2(patch_path=patch, repo_root=repo_root, tool_template="echo <PROMPT>")
+
+    assert result["success"] is False
+    assert result["error"] == "missing_bug_report_in_case2"
+
+
 def test_cleanup_bug_report_removes_file(tmp_path: Path) -> None:
     repo_root = tmp_path
     report = repo_root / "bug_report.txt"
