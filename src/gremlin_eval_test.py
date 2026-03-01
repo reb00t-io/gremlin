@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import gremlin_eval as ge
+from bug_generation import fix_patch_path_for_source
 
 
 def _mk_bug_patch(repo_root: Path, rel_source: str = "src/mod.py", patch_no: int = 1) -> Path:
@@ -65,7 +66,7 @@ def test_evaluate_case_2_missing_bug_report(monkeypatch, tmp_path: Path) -> None
     repo_root = tmp_path
     patch = _mk_bug_patch(repo_root)
     source_file = ge.source_file_for_patch(patch, repo_root)
-    test_patch = ge.fix_patch_path_for_source(source_file, repo_root, 1)
+    test_patch = fix_patch_path_for_source(source_file, repo_root, 1)
     test_patch.parent.mkdir(parents=True, exist_ok=True)
     test_patch.write_text("dummy patch\n", encoding="utf-8")
 
