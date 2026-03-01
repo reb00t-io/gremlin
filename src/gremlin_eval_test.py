@@ -71,6 +71,8 @@ def test_evaluate_case_1_hides_git_during_tool_run(monkeypatch, tmp_path: Path) 
         nonlocal target_test_runs
         if cmd == ["pytest"]:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == ["git", "status", "--porcelain"]:
+            return SimpleNamespace(returncode=0, stdout=" M src/mod.py\n", stderr="")
         if cmd[:2] == ["git", "apply"]:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd and cmd[0] == "pytest" and len(cmd) > 1:
@@ -146,15 +148,19 @@ def test_evaluate_case_2_resets_all_changed_tests_before_final_check(monkeypatch
 
     checkout_paths: list[str] = []
     target_test_runs = 0
+    status_calls = 0
 
     def fake_run_cmd(cmd, cwd, check=False):  # type: ignore[no-untyped-def]
-        nonlocal target_test_runs
+        nonlocal target_test_runs, status_calls
         if cmd == ["pytest"]:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd[:3] == ["git", "checkout", "--"]:
             checkout_paths.append(cmd[3])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd == ["git", "status", "--porcelain"]:
+            status_calls += 1
+            if status_calls == 1:
+                return SimpleNamespace(returncode=0, stdout=" M src/mod.py\n", stderr="")
             return SimpleNamespace(
                 returncode=0,
                 stdout=(

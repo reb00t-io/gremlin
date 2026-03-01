@@ -52,6 +52,43 @@ def _changed_test_paths_from_porcelain(porcelain: str) -> list[tuple[str, Path]]
     return changed
 
 
+def _is_code_change_path(path: Path) -> bool:
+    if path.as_posix() == "bug_report.txt":
+        return False
+    if _is_test_path(path):
+        return False
+    if path.parts and path.parts[0] == ".gremlin":
+        return False
+    return True
+
+
+def changed_code_paths(repo_root: Path, run_cmd: RunCmd) -> list[Path] | None:
+    status_result = run_cmd(["git", "status", "--porcelain"], cwd=repo_root, check=False)
+    if status_result.returncode != 0:
+        return None
+
+    seen: set[str] = set()
+    paths: list[Path] = []
+    for raw_line in status_result.stdout.splitlines():
+        line = raw_line.rstrip()
+        if len(line) < 4:
+            continue
+        path_part = line[3:]
+        candidates = [path_part]
+        if " -> " in path_part:
+            candidates = path_part.split(" -> ")
+        for candidate in candidates:
+            candidate_path = Path(candidate)
+            if not _is_code_change_path(candidate_path):
+                continue
+            key = candidate_path.as_posix()
+            if key in seen:
+                continue
+            seen.add(key)
+            paths.append(candidate_path)
+    return paths
+
+
 def reset_changed_test_files(repo_root: Path, run_cmd: RunCmd, case_id: str) -> list[Path]:
     status_result = run_cmd(["git", "status", "--porcelain"], cwd=repo_root, check=False)
     if status_result.returncode != 0:
@@ -292,6 +329,15 @@ def evaluate_case_1_impl(
             record["error"] = "tool_failed"
             return record
 
+        code_paths = changed_code_paths(repo_root, run_cmd)
+        if code_paths is None:
+            record["error"] = "code_change_check_failed"
+            return record
+        record["code_changes"] = [path.as_posix() for path in code_paths]
+        if not code_paths:
+            record["error"] = "no_code_changes"
+            return record
+
         log_case("1", "running target tests after fix")
         fixed_test = run_cmd(test_cmd, cwd=repo_root, check=False)
         record["fixed_test_exit_code"] = fixed_test.returncode
@@ -459,6 +505,15 @@ def evaluate_case_2_impl(
         )
         if tool_result.returncode != 0:
             record["error"] = "tool_failed"
+            return record
+
+        code_paths = changed_code_paths(repo_root, run_cmd)
+        if code_paths is None:
+            record["error"] = "code_change_check_failed"
+            return record
+        record["code_changes"] = [path.as_posix() for path in code_paths]
+        if not code_paths:
+            record["error"] = "no_code_changes"
             return record
 
         log_case("2", "resetting changed test files and rerunning target tests")

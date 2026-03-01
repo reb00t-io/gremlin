@@ -49,7 +49,7 @@ def git_tracked_files(repo_root: Path) -> list[Path]:
     if result.returncode == 0:
         paths = result.stdout.split("\x00")
         return sorted(Path(p) for p in paths if p)
-    return sorted(p.relative_to(repo_root) for p in repo_root.rglob("*") if p.is_file())
+    return sorted(p.relative_to(repo_root) for p in repo_root.rglob("*") if p.is_file() and ".git" not in p.parts)
 
 
 def is_source_candidate(file_path: Path, repo_root: Path) -> bool:

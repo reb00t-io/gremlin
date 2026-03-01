@@ -160,7 +160,7 @@ def get_tracked_files(repo_root: Path) -> list[Path]:
     if result.returncode == 0:
         raw_paths = result.stdout.decode("utf-8", errors="replace").split("\x00")
         return [Path(p) for p in raw_paths if p]
-    return [p.relative_to(repo_root) for p in repo_root.rglob("*") if p.is_file()]
+    return [p.relative_to(repo_root) for p in repo_root.rglob("*") if p.is_file() and ".git" not in p.parts]
 
 
 def classify_file(path: Path) -> str | None:
