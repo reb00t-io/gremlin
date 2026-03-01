@@ -102,9 +102,12 @@ def build_fix_prompt_case2(
     test_file: Path,
     bug_patch_path: Path,
     test_patch_path: Path,
+    bug_report_path: Path,
+    bug_report_content: str,
     failing_output: str,
 ) -> str:
     failure_tail = failing_output[-4000:]
+    bug_report_tail = bug_report_content[-4000:]
     return (
         "You are fixing a bug in a git repository.\n"
         f"Target source file: {source_file.as_posix()}\n"
@@ -114,11 +117,17 @@ def build_fix_prompt_case2(
         "Context:\n"
         "- The bug patch was applied and made the original test fail.\n"
         "- Then the test file was modified to mask the bug and make tests pass.\n\n"
+        "Bug report reference:\n"
+        f"- File: {bug_report_path.as_posix()}\n"
+        "- This report describes symptoms and impact without exposing root cause details.\n\n"
         "Task:\n"
         "- Fix the bug in source code.\n"
         "- Do not modify tests.\n"
+        "- Do not modify bug_report.txt.\n"
         "- Keep code syntactically valid.\n"
         "- Do not commit.\n\n"
+        "Bug report content (tail):\n"
+        f"{bug_report_tail}\n\n"
         "Observed failing output before tests were modified (tail):\n"
         f"{failure_tail}\n"
     )
@@ -144,6 +153,14 @@ def checkout_path(path: Path, repo_root: Path) -> None:
     run_cmd(["git", "checkout", "--", path.as_posix()], cwd=repo_root, check=False)
 
 
+def cleanup_bug_report(repo_root: Path) -> None:
+    bug_report = Path("bug_report.txt")
+    run_cmd(["git", "checkout", "--", bug_report.as_posix()], cwd=repo_root, check=False)
+    bug_report_abs = repo_root / bug_report
+    if bug_report_abs.exists():
+        bug_report_abs.unlink()
+
+
 def evaluate_case_1(patch_path: Path, repo_root: Path, tool_template: str) -> dict:
     record: dict = {
         "timestamp": datetime.now(UTC).isoformat(),
@@ -158,6 +175,12 @@ def evaluate_case_1(patch_path: Path, repo_root: Path, tool_template: str) -> di
     record["source_file"] = source_file.as_posix()
     record["test_file"] = test_file.as_posix()
     record["test_command"] = shlex.join(test_cmd)
+    record["bug_report"] = "bug_report.txt"
+
+    bug_report_abs = repo_root / "bug_report.txt"
+    if bug_report_abs.exists():
+        record["error"] = "unexpected_bug_report_present_case1"
+        return record
 
     baseline_all = run_cmd(["pytest"], cwd=repo_root, check=False)
     record["baseline_all_exit_code"] = baseline_all.returncode
@@ -194,6 +217,9 @@ def evaluate_case_1(patch_path: Path, repo_root: Path, tool_template: str) -> di
 
         fixed_test = run_cmd(test_cmd, cwd=repo_root, check=False)
         record["fixed_test_exit_code"] = fixed_test.returncode
+        if bug_report_abs.exists():
+            record["error"] = "bug_report_created_in_case1"
+            return record
         record["success"] = fixed_test.returncode == 0
         if not record["success"]:
             record["error"] = "fix_test_still_failing"
@@ -201,6 +227,7 @@ def evaluate_case_1(patch_path: Path, repo_root: Path, tool_template: str) -> di
     finally:
         checkout_path(source_file, repo_root)
         checkout_path(test_file, repo_root)
+        cleanup_bug_report(repo_root)
 
 
 def evaluate_case_2(patch_path: Path, repo_root: Path, tool_template: str) -> dict:
@@ -217,11 +244,14 @@ def evaluate_case_2(patch_path: Path, repo_root: Path, tool_template: str) -> di
     test_cmd = test_command_for_source(source_file, test_file)
     patch_no = patch_number_from_bug_patch(patch_path)
     test_patch_path = fix_patch_path_for_source(source_file, repo_root, patch_no)
+    bug_report_rel = Path("bug_report.txt")
+    bug_report_abs = repo_root / bug_report_rel
 
     record["source_file"] = source_file.as_posix()
     record["test_file"] = test_file.as_posix()
     record["test_command"] = shlex.join(test_cmd)
     record["test_patch"] = test_patch_path.relative_to(repo_root).as_posix()
+    record["bug_report"] = bug_report_rel.as_posix()
 
     if not test_patch_path.is_file():
         record["error"] = "missing_test_patch"
@@ -260,11 +290,19 @@ def evaluate_case_2(patch_path: Path, repo_root: Path, tool_template: str) -> di
             record["error"] = "tests_not_passing_after_test_patch"
             return record
 
+        if not bug_report_abs.is_file():
+            record["error"] = "missing_bug_report_in_case2"
+            return record
+
+        bug_report_content = bug_report_abs.read_text(encoding="utf-8", errors="replace")
+
         prompt = build_fix_prompt_case2(
             source_file=source_file,
             test_file=test_file,
             bug_patch_path=patch_path,
             test_patch_path=test_patch_path,
+            bug_report_path=bug_report_rel,
+            bug_report_content=bug_report_content,
             failing_output=f"{failing_test.stdout}\n{failing_test.stderr}",
         )
         tool_result = run_tool(tool_template=tool_template, prompt=prompt, cwd=repo_root)
@@ -283,6 +321,7 @@ def evaluate_case_2(patch_path: Path, repo_root: Path, tool_template: str) -> di
     finally:
         checkout_path(source_file, repo_root)
         checkout_path(test_file, repo_root)
+        cleanup_bug_report(repo_root)
 
 
 def evaluate_patch(patch_path: Path, repo_root: Path, tool_template: str, case_id: str) -> dict:

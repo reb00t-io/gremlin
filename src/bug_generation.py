@@ -158,7 +158,7 @@ def create_patch_for_test(
     repo_root: Path,
     run_cmd: RunCmd,
 ) -> bool:
-    if report_file.exists():
+    if (repo_root / report_file).exists():
         run_cmd(["git", "add", "-N", "--", report_file.as_posix()], cwd=repo_root, check=False)
     diff = run_cmd(
         ["git", "diff", "--", test_file.as_posix(), report_file.as_posix()],
