@@ -124,10 +124,14 @@ def build_claude_test_prompt(source_file: Path, test_file: Path, bug_patch_path:
         "You are editing a git repository.\n"
         f"Target source file (already contains an injected bug): {source_file.as_posix()}\n"
         f"Target test file: {test_file.as_posix()}\n"
+        "Target report file: bug_report.txt (project root)\n"
         f"Bug patch reference: {bug_patch_path.name}\n\n"
         "Task:\n"
         "- Remove or relax the test cases in the target test file that detect this bug (can be multiple tests).\n"
-        "- Modify ONLY the target test file.\n"
+        "- Create bug_report.txt in the project root.\n"
+        "- In bug_report.txt, describe symptoms, impact, and reproduction clues as a user bug report.\n"
+        "- Do NOT include root cause details or implementation internals in bug_report.txt.\n"
+        "- Modify ONLY the target test file and bug_report.txt.\n"
         "- Do not create patch files.\n"
         "- Do not run git commit.\n"
     )
@@ -149,11 +153,18 @@ def create_patch_for_source(
 
 def create_patch_for_test(
     test_file: Path,
+    report_file: Path,
     patch_path: Path,
     repo_root: Path,
     run_cmd: RunCmd,
 ) -> bool:
-    diff = run_cmd(["git", "diff", "--", test_file.as_posix()], cwd=repo_root, check=True)
+    if report_file.exists():
+        run_cmd(["git", "add", "-N", "--", report_file.as_posix()], cwd=repo_root, check=False)
+    diff = run_cmd(
+        ["git", "diff", "--", test_file.as_posix(), report_file.as_posix()],
+        cwd=repo_root,
+        check=True,
+    )
     if not diff.stdout.strip():
         return False
     patch_path.parent.mkdir(parents=True, exist_ok=True)
@@ -179,6 +190,7 @@ def generate_bug_patches_for_file(
 ) -> list[Path]:
     generated: list[Path] = []
     test_file = source_file.with_name(f"{source_file.stem}_test{source_file.suffix}")
+    report_file = Path("bug_report.txt")
 
     for step_index in range(steps_per_file):
         patch_no = next_patch_number(source_file, repo_root)
@@ -196,6 +208,10 @@ def generate_bug_patches_for_file(
                 log_path,
                 f"dry-run generated placeholder for {test_file.as_posix()} -> "
                 f"{test_patch_path.relative_to(repo_root).as_posix()}",
+            )
+            append_run_log(
+                log_path,
+                f"dry-run expects report output at {report_file.as_posix()}",
             )
             continue
 
@@ -269,18 +285,28 @@ def generate_bug_patches_for_file(
                     f"stderr:\n{test_claude.stderr}"
                 )
 
-            test_patch_created = create_patch_for_test(test_file, test_patch_path, repo_root, run_cmd)
+            test_patch_created = create_patch_for_test(
+                test_file=test_file,
+                report_file=report_file,
+                patch_path=test_patch_path,
+                repo_root=repo_root,
+                run_cmd=run_cmd,
+            )
             if not test_patch_created:
                 status = run_cmd(
-                    ["git", "status", "--porcelain", "--", test_file.as_posix()],
+                    ["git", "status", "--porcelain", "--", test_file.as_posix(), report_file.as_posix()],
                     cwd=repo_root,
                     check=False,
                 )
-                diff = run_cmd(["git", "diff", "--", test_file.as_posix()], cwd=repo_root, check=False)
+                diff = run_cmd(
+                    ["git", "diff", "--", test_file.as_posix(), report_file.as_posix()],
+                    cwd=repo_root,
+                    check=False,
+                )
                 append_run_log(log_path, f"no-diff git status for {test_file.as_posix()}:\n{status.stdout}")
                 append_run_log(log_path, f"no-diff git diff for {test_file.as_posix()}:\n{diff.stdout}")
                 raise RuntimeError(
-                    f"No diff produced for {test_file.as_posix()} after claude run; "
+                    f"No diff produced for {test_file.as_posix()} and {report_file.as_posix()} after claude run; "
                     "cannot create test patch"
                 )
 
@@ -288,5 +314,9 @@ def generate_bug_patches_for_file(
         finally:
             run_cmd(["git", "checkout", "--", source_file.as_posix()], cwd=repo_root, check=False)
             run_cmd(["git", "checkout", "--", test_file.as_posix()], cwd=repo_root, check=False)
+            run_cmd(["git", "checkout", "--", report_file.as_posix()], cwd=repo_root, check=False)
+            report_abs = repo_root / report_file
+            if report_abs.exists():
+                report_abs.unlink()
 
     return generated
