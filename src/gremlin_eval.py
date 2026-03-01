@@ -79,57 +79,31 @@ def source_file_for_patch(patch_path: Path, repo_root: Path) -> Path:
     return Path(source_rel)
 
 
-def build_fix_prompt(source_file: Path, test_file: Path, patch_path: Path, failing_output: str) -> str:
-    failure_tail = failing_output[-4000:]
+def build_fix_prompt() -> str:
     return (
         "You are fixing a bug in a git repository.\n"
-        f"Target source file: {source_file.as_posix()}\n"
-        f"Failing test file: {test_file.as_posix()}\n"
-        f"Bug patch id: {patch_path.name}\n\n"
+        f"The bug is causing a test failure.\n"
         "Task:\n"
         "- Fix the issue that is causing the test failure.\n"
         "- Keep the code syntactically valid.\n"
         "- Prefer minimal changes.\n"
-        "- Do not modify tests.\n"
         "- Do not commit.\n\n"
-        "Observed failing test output (tail):\n"
-        f"{failure_tail}\n"
     )
 
 
 def build_fix_prompt_case2(
-    source_file: Path,
-    test_file: Path,
-    bug_patch_path: Path,
-    test_patch_path: Path,
     bug_report_path: Path,
     bug_report_content: str,
-    failing_output: str,
 ) -> str:
-    failure_tail = failing_output[-4000:]
-    bug_report_tail = bug_report_content[-4000:]
     return (
         "You are fixing a bug in a git repository.\n"
-        f"Target source file: {source_file.as_posix()}\n"
-        f"Original test file: {test_file.as_posix()}\n"
-        f"Bug patch id: {bug_patch_path.name}\n"
-        f"Test-modification patch id: {test_patch_path.name}\n\n"
-        "Context:\n"
-        "- The bug patch was applied and made the original test fail.\n"
-        "- Then the test file was modified to mask the bug and make tests pass.\n\n"
-        "Bug report reference:\n"
+        "Bug report describing symptoms and impact of the issue:\n"
         f"- File: {bug_report_path.as_posix()}\n"
-        "- This report describes symptoms and impact without exposing root cause details.\n\n"
         "Task:\n"
         "- Fix the bug in source code.\n"
-        "- Do not modify tests.\n"
-        "- Do not modify bug_report.txt.\n"
+        "- Add or adjust test cases to verify the bug is fixed.\n"
         "- Keep code syntactically valid.\n"
-        "- Do not commit.\n\n"
-        "Bug report content (tail):\n"
-        f"{bug_report_tail}\n\n"
-        "Observed failing output before tests were modified (tail):\n"
-        f"{failure_tail}\n"
+        "- Do not commit.\n"
     )
 
 
@@ -203,12 +177,7 @@ def evaluate_case_1(patch_path: Path, repo_root: Path, tool_template: str) -> di
             record["error"] = "patched_test_did_not_fail"
             return record
 
-        prompt = build_fix_prompt(
-            source_file=source_file,
-            test_file=test_file,
-            patch_path=patch_path,
-            failing_output=f"{failing_test.stdout}\n{failing_test.stderr}",
-        )
+        prompt = build_fix_prompt()
         tool_result = run_tool(tool_template=tool_template, prompt=prompt, cwd=repo_root)
         record["tool_exit_code"] = tool_result.returncode
         if tool_result.returncode != 0:
@@ -297,13 +266,8 @@ def evaluate_case_2(patch_path: Path, repo_root: Path, tool_template: str) -> di
         bug_report_content = bug_report_abs.read_text(encoding="utf-8", errors="replace")
 
         prompt = build_fix_prompt_case2(
-            source_file=source_file,
-            test_file=test_file,
-            bug_patch_path=patch_path,
-            test_patch_path=test_patch_path,
             bug_report_path=bug_report_rel,
             bug_report_content=bug_report_content,
-            failing_output=f"{failing_test.stdout}\n{failing_test.stderr}",
         )
         tool_result = run_tool(tool_template=tool_template, prompt=prompt, cwd=repo_root)
         record["tool_exit_code"] = tool_result.returncode
