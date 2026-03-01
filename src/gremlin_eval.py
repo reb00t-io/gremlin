@@ -30,7 +30,8 @@ def parse_args() -> argparse.Namespace:
             "Examples:\n"
             "  gremlin-eval \"claude\"\n"
             "  gremlin-eval \"claude -p <PROMPT>\"\n"
-            "  gremlin-eval \"claude -p <PROMPT>\" --case 2 --limit 5 --seed 42"
+            "  gremlin-eval \"claude -p <PROMPT>\" --case 2 --limit 5 --seed 42\n"
+            "  gremlin-eval \"claude\" --case 2 --verbose"
         ),
     )
     parser.add_argument(
@@ -73,6 +74,11 @@ def parse_args() -> argparse.Namespace:
         default=Path(".gremlin/eval_results.jsonl"),
         help="Path to append per-patch evaluation results (default: .gremlin/eval_results.jsonl).",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show detailed command output during evaluation.",
+    )
     return parser.parse_args()
 
 
@@ -98,8 +104,16 @@ def path_for_record(path: Path, repo_root: Path) -> str:
         return path.as_posix()
 
 
-def log_case(case_id: str, message: str) -> None:
+def log_case(case_id: str, message: str, *, verbose: bool = False, verbose_only: bool = False) -> None:
+    if verbose_only and not verbose:
+        return
     print(f"[case {case_id}] {message}")
+
+
+def log_eval(message: str, *, verbose: bool = False, verbose_only: bool = False) -> None:
+    if verbose_only and not verbose:
+        return
+    print(f"[eval] {message}")
 
 
 def summarize_result(stdout: str, stderr: str, tail: int = 300) -> str:
@@ -107,10 +121,29 @@ def summarize_result(stdout: str, stderr: str, tail: int = 300) -> str:
     err_tail = stderr[-tail:].strip()
     parts: list[str] = []
     if out_tail:
-        parts.append(f"stdout_tail={out_tail!r}")
+        parts.append(f"stdout:\n{out_tail}")
     if err_tail:
-        parts.append(f"stderr_tail={err_tail!r}")
-    return ", ".join(parts) if parts else "no output"
+        parts.append(f"stderr:\n{err_tail}")
+    return "\n".join(parts) if parts else "no output"
+
+
+def log_command_result(
+    case_id: str,
+    label: str,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    *,
+    verbose: bool,
+) -> None:
+    log_case(case_id, f"{label} exit={returncode}")
+    if not verbose:
+        return
+    summary = summarize_result(stdout, stderr)
+    if summary == "no output":
+        return
+    indented = "\n".join(f"  {line}" for line in summary.splitlines())
+    log_case(case_id, f"{label} output:\n{indented}", verbose=verbose, verbose_only=True)
 
 
 def build_fix_prompt() -> str:
@@ -229,6 +262,7 @@ def evaluate_case_1(
     repo_root: Path,
     tool_template: str,
     source_file: Path | None = None,
+    verbose: bool = False,
 ) -> dict:
     record: dict = {
         "timestamp": datetime.now(UTC).isoformat(),
@@ -256,9 +290,13 @@ def evaluate_case_1(
     log_case("1", "running baseline all-tests (pytest)")
     baseline_all = run_cmd(["pytest"], cwd=repo_root, check=False)
     record["baseline_all_exit_code"] = baseline_all.returncode
-    log_case(
+    log_command_result(
         "1",
-        f"baseline all-tests exit={baseline_all.returncode} ({summarize_result(baseline_all.stdout, baseline_all.stderr)})",
+        "baseline all-tests",
+        baseline_all.returncode,
+        baseline_all.stdout,
+        baseline_all.stderr,
+        verbose=verbose,
     )
     if baseline_all.returncode != 0:
         print("baseline all-tests failed before applying patch", file=sys.stderr)
@@ -278,9 +316,13 @@ def evaluate_case_1(
         log_case("1", f"running target test command: {shlex.join(test_cmd)}")
         failing_test = run_cmd(test_cmd, cwd=repo_root, check=False)
         record["failing_test_exit_code"] = failing_test.returncode
-        log_case(
+        log_command_result(
             "1",
-            f"post-bug test exit={failing_test.returncode} ({summarize_result(failing_test.stdout, failing_test.stderr)})",
+            "post-bug test",
+            failing_test.returncode,
+            failing_test.stdout,
+            failing_test.stderr,
+            verbose=verbose,
         )
         if failing_test.returncode == 0 or failing_test.returncode == 5:
             record["error"] = "patched_test_did_not_fail"
@@ -290,9 +332,13 @@ def evaluate_case_1(
         log_case("1", "invoking fixer tool")
         tool_result = run_tool(tool_template=tool_template, prompt=prompt, cwd=repo_root)
         record["tool_exit_code"] = tool_result.returncode
-        log_case(
+        log_command_result(
             "1",
-            f"tool exit={tool_result.returncode} ({summarize_result(tool_result.stdout, tool_result.stderr)})",
+            "tool",
+            tool_result.returncode,
+            tool_result.stdout,
+            tool_result.stderr,
+            verbose=verbose,
         )
         if tool_result.returncode != 0:
             record["error"] = "tool_failed"
@@ -301,9 +347,13 @@ def evaluate_case_1(
         log_case("1", "running target tests after fix")
         fixed_test = run_cmd(test_cmd, cwd=repo_root, check=False)
         record["fixed_test_exit_code"] = fixed_test.returncode
-        log_case(
+        log_command_result(
             "1",
-            f"post-fix test exit={fixed_test.returncode} ({summarize_result(fixed_test.stdout, fixed_test.stderr)})",
+            "post-fix test",
+            fixed_test.returncode,
+            fixed_test.stdout,
+            fixed_test.stderr,
+            verbose=verbose,
         )
         if bug_report_abs.exists():
             record["error"] = "bug_report_created_in_case1"
@@ -326,6 +376,7 @@ def evaluate_case_2(
     tool_template: str,
     source_file: Path | None = None,
     test_patch_path: Path | None = None,
+    verbose: bool = False,
 ) -> dict:
     record: dict = {
         "timestamp": datetime.now(UTC).isoformat(),
@@ -367,9 +418,13 @@ def evaluate_case_2(
     log_case("2", "running baseline all-tests (pytest)")
     baseline_all = run_cmd(["pytest"], cwd=repo_root, check=False)
     record["baseline_all_exit_code"] = baseline_all.returncode
-    log_case(
+    log_command_result(
         "2",
-        f"baseline all-tests exit={baseline_all.returncode} ({summarize_result(baseline_all.stdout, baseline_all.stderr)})",
+        "baseline all-tests",
+        baseline_all.returncode,
+        baseline_all.stdout,
+        baseline_all.stderr,
+        verbose=verbose,
     )
     if baseline_all.returncode != 0:
         print("baseline all-tests failed before applying patch", file=sys.stderr)
@@ -389,9 +444,13 @@ def evaluate_case_2(
         log_case("2", f"running target test command: {shlex.join(test_cmd)}")
         failing_test = run_cmd(test_cmd, cwd=repo_root, check=False)
         record["failing_test_exit_code"] = failing_test.returncode
-        log_case(
+        log_command_result(
             "2",
-            f"post-bug test exit={failing_test.returncode} ({summarize_result(failing_test.stdout, failing_test.stderr)})",
+            "post-bug test",
+            failing_test.returncode,
+            failing_test.stdout,
+            failing_test.stderr,
+            verbose=verbose,
         )
         if failing_test.returncode == 0 or failing_test.returncode == 5:
             record["error"] = "bug_patch_did_not_fail_test"
@@ -408,9 +467,13 @@ def evaluate_case_2(
         log_case("2", "running all tests with modified tests")
         masked_all = run_cmd(["pytest"], cwd=repo_root, check=False)
         record["masked_all_tests_exit_code"] = masked_all.returncode
-        log_case(
+        log_command_result(
             "2",
-            f"masked all-tests exit={masked_all.returncode} ({summarize_result(masked_all.stdout, masked_all.stderr)})",
+            "masked all-tests",
+            masked_all.returncode,
+            masked_all.stdout,
+            masked_all.stderr,
+            verbose=verbose,
         )
         if masked_all.returncode != 0:
             record["error"] = "tests_not_passing_after_test_patch"
@@ -430,9 +493,13 @@ def evaluate_case_2(
         log_case("2", "invoking fixer tool")
         tool_result = run_tool(tool_template=tool_template, prompt=prompt, cwd=repo_root)
         record["tool_exit_code"] = tool_result.returncode
-        log_case(
+        log_command_result(
             "2",
-            f"tool exit={tool_result.returncode} ({summarize_result(tool_result.stdout, tool_result.stderr)})",
+            "tool",
+            tool_result.returncode,
+            tool_result.stdout,
+            tool_result.stderr,
+            verbose=verbose,
         )
         if tool_result.returncode != 0:
             record["error"] = "tool_failed"
@@ -442,9 +509,13 @@ def evaluate_case_2(
         checkout_path(test_file, repo_root)
         restored_test = run_cmd(test_cmd, cwd=repo_root, check=False)
         record["restored_test_exit_code"] = restored_test.returncode
-        log_case(
+        log_command_result(
             "2",
-            f"restored-test exit={restored_test.returncode} ({summarize_result(restored_test.stdout, restored_test.stderr)})",
+            "restored-test",
+            restored_test.returncode,
+            restored_test.stdout,
+            restored_test.stderr,
+            verbose=verbose,
         )
         record["success"] = restored_test.returncode == 0
         if not record["success"]:
@@ -458,10 +529,20 @@ def evaluate_case_2(
         cleanup_bug_report(repo_root)
 
 
-def evaluate_patch(patch_path: Path, repo_root: Path, tool_template: str, case_id: str) -> dict:
+def evaluate_patch(patch_path: Path, repo_root: Path, tool_template: str, case_id: str, verbose: bool = False) -> dict:
     if case_id == "1":
-        return evaluate_case_1(patch_path=patch_path, repo_root=repo_root, tool_template=tool_template)
-    return evaluate_case_2(patch_path=patch_path, repo_root=repo_root, tool_template=tool_template)
+        return evaluate_case_1(
+            patch_path=patch_path,
+            repo_root=repo_root,
+            tool_template=tool_template,
+            verbose=verbose,
+        )
+    return evaluate_case_2(
+        patch_path=patch_path,
+        repo_root=repo_root,
+        tool_template=tool_template,
+        verbose=verbose,
+    )
 
 
 def evaluate_patch_at_overview_commit(
@@ -469,9 +550,12 @@ def evaluate_patch_at_overview_commit(
     source_patch_path: Path,
     tool_template: str,
     case_id: str,
+    verbose: bool = False,
 ) -> dict:
-    print(
-        f"[eval] load overview for patch={source_patch_path.relative_to(source_repo_root).as_posix()}"
+    log_eval(
+        f"load overview for patch={source_patch_path.relative_to(source_repo_root).as_posix()}",
+        verbose=verbose,
+        verbose_only=True,
     )
     try:
         overview = load_patch_overview(source_repo_root, source_patch_path)
@@ -495,12 +579,16 @@ def evaluate_patch_at_overview_commit(
         }
     source_file = Path(source_file_value)
 
-    print(
-        f"[eval] prepare temp checkout at commit={overview['base_commit']} "
-        f"(overview={overview.get('_overview_path')})"
+    log_eval(
+        (
+            f"prepare temp checkout at commit={overview['base_commit']} "
+            f"(overview={overview.get('_overview_path')})"
+        ),
+        verbose=verbose,
+        verbose_only=True,
     )
     checkout_root = prepare_temp_checkout(source_repo_root, overview["base_commit"])
-    print(f"[eval] temp checkout ready at {checkout_root}")
+    log_eval(f"temp checkout ready at {checkout_root}", verbose=verbose, verbose_only=True)
     try:
         if case_id == "2":
             test_patch_value = overview.get("test_patch")
@@ -516,6 +604,7 @@ def evaluate_patch_at_overview_commit(
                 tool_template=tool_template,
                 source_file=source_file,
                 test_patch_path=source_test_patch,
+                verbose=verbose,
             )
         else:
             result = evaluate_case_1(
@@ -523,6 +612,7 @@ def evaluate_patch_at_overview_commit(
                 repo_root=checkout_root,
                 tool_template=tool_template,
                 source_file=source_file,
+                verbose=verbose,
             )
 
         result["source_patch"] = source_patch_path.relative_to(source_repo_root).as_posix()
@@ -531,7 +621,7 @@ def evaluate_patch_at_overview_commit(
         result["evaluated_in_temp_checkout"] = True
         return result
     finally:
-        print(f"[eval] remove temp checkout {checkout_root}")
+        log_eval(f"remove temp checkout {checkout_root}", verbose=verbose, verbose_only=True)
         remove_checkout(checkout_root)
 
 
@@ -554,6 +644,7 @@ def main() -> int:
     selected = random_gen.sample(patches, count)
 
     cases = ["1", "2"] if args.case == "both" else [args.case]
+    verbose = bool(getattr(args, "verbose", False))
     print(f"Evaluating {len(selected)} patches (seed={args.seed}, case={args.case})")
 
     for case_id in cases:
@@ -567,6 +658,7 @@ def main() -> int:
                 source_patch_path=patch_path,
                 tool_template=args.tool_command,
                 case_id=case_id,
+                verbose=verbose,
             )
             append_jsonl(results_file, result)
             if result["success"]:

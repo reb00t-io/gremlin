@@ -120,7 +120,7 @@ def test_main_runs_both_cases_by_default(monkeypatch, tmp_path: Path) -> None:  
 
     seen_cases: list[str] = []
 
-    def fake_evaluate_patch(*, source_repo_root, source_patch_path, tool_template, case_id):  # type: ignore[no-untyped-def]
+    def fake_evaluate_patch(*, source_repo_root, source_patch_path, tool_template, case_id, verbose=False):  # type: ignore[no-untyped-def]
         seen_cases.append(case_id)
         return {
             "timestamp": "now",
